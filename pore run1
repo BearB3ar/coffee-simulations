@@ -1,0 +1,49 @@
+import numpy as np
+import porespy as ps
+import openpnm as op
+import matplotlib.pyplot as plt
+from skimage import measure
+import vtk # optional for VTK writes, or use openpnm exporters
+
+# 1) Generate a 3D sphere packing (voxels)
+shape = [120, 120, 80]  # small domain for presentation; change as needed
+radii = 4  # sphere radius in voxels (controls porosity / throat sizes)
+im = ps.generators.spheres(shape=shape, r=radii, spacing=[1,1,1], kind='random')
+
+# optional: visualize central slice
+plt.imshow(im[:, :, shape[2]//2])
+plt.title('Packed spheres slice')
+plt.show()
+
+# 2) Extract pore network from the image using PoreSpy SNOW + OpenPNM network extraction
+net, geom = op.networks.network_from_image(im, spacing=1.0)  # convenience wrapper if available
+
+# If the above wrapper isn't available, use porespy's snow algorithm to get coordinates,
+# then build an OpenPNM network with those coords (see docs/examples).
+
+# 3) Create OpenPNM Project and add phase & physics
+proj = op.Project()
+pn = op.network.Cubic(name='demo_net', shape=[20,20,10], spacing=1.0) # or use extracted net
+phase = op.phases.Water(network=pn)
+phys = op.physics.GenericPhysics(network=pn, phase=phase)
+
+# 4) Run Stokes-like flow (Darcy on network) to get fluxes
+flow = op.algorithms.StokesFlow(network=pn, phase=phase)
+flow.set_value_BC(pores=[pn.pores('left')], values=1.0)
+flow.set_value_BC(pores=[pn.pores('right')], values=0.0)
+flow.run()
+
+# 5) Run advection-diffusion (steady/tracer)
+ad = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
+ad.setup(pore_diffusivity=1e-9)  # example diffusivity (m2/s) scaled to your units
+ad.set_source(pores=pn.pores('left'), values=1.0)  # tracer injection
+ad.run()
+C = ad['pore.concentration']
+
+# 6) Visualize pore concentrations (simple)
+plt.hist(C, bins=40)
+plt.xlabel('Pore concentration')
+plt.show()
+
+# 7) Export network data for ParaView (VTK)
+pn.to_vtk(filename='pore_net.vtk', data={'pore.concentration': C, 'pore.pressure': flow['pore.pressure']})
