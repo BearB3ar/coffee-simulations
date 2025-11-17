@@ -3,12 +3,15 @@ import porespy as ps
 import openpnm as op
 import matplotlib.pyplot as plt
 from skimage import measure
+import scipy
+import openpnm.models.physics as physics
 import vtk # optional for VTK writes, or use openpnm exporters
 
 # 1) Generate a 3D sphere packing (voxels)
 shape = [120, 120, 80]  # small domain for presentation; change as needed
 radii = 4  # sphere radius in voxels (controls porosity / throat sizes)
-im = ps.generators.spheres(shape=shape, r=radii, spacing=[1,1,1], kind='random')
+dist = scipy.stats.norm(loc=radii, scale=1.0)  # normal distribution of sphere sizes
+im = ps.generators.polydisperse_spheres(shape=shape, r_min=radii, porosity=0.5, dist=dist)  # initial porous structure
 
 # optional: visualize central slice
 plt.imshow(im[:, :, shape[2]//2])
@@ -16,21 +19,27 @@ plt.title('Packed spheres slice')
 plt.show()
 
 # 2) Extract pore network from the image using PoreSpy SNOW + OpenPNM network extraction
-net, geom = op.networks.network_from_image(im, spacing=1.0)  # convenience wrapper if available
+snow_dict = ps.networks.snow2(im, voxel_size=1.0)
+pn = op.io.network_from_porespy(snow_dict.network)
 
 # If the above wrapper isn't available, use porespy's snow algorithm to get coordinates,
 # then build an OpenPNM network with those coords (see docs/examples).
 
 # 3) Create OpenPNM Project and add phase & physics
 proj = op.Project()
-pn = op.network.Cubic(name='demo_net', shape=[20,20,10], spacing=1.0) # or use extracted net
-phase = op.phases.Water(network=pn)
-phys = op.physics.GenericPhysics(network=pn, phase=phase)
+phase = op.phase.Water(network=pn)
+
 
 # 4) Run Stokes-like flow (Darcy on network) to get fluxes
 flow = op.algorithms.StokesFlow(network=pn, phase=phase)
-flow.set_value_BC(pores=[pn.pores('left')], values=1.0)
-flow.set_value_BC(pores=[pn.pores('right')], values=0.0)
+coords = pn.coords
+tol = 1e-6
+left_pores = pn.pores()[coords[:,0] <= coords[:,0].min() + tol]
+right_pores = pn.pores()[coords[:,0] >= coords[:,0].max() - tol]
+
+flow.set_value_BC(pores=left_pores, values=1.0)
+flow.set_value_BC(pores=right_pores, values=0.0)
+
 flow.run()
 
 # 5) Run advection-diffusion (steady/tracer)
@@ -44,6 +53,3 @@ C = ad['pore.concentration']
 plt.hist(C, bins=40)
 plt.xlabel('Pore concentration')
 plt.show()
-
-# 7) Export network data for ParaView (VTK)
-pn.to_vtk(filename='pore_net.vtk', data={'pore.concentration': C, 'pore.pressure': flow['pore.pressure']})
