@@ -5,30 +5,37 @@ import matplotlib.pyplot as plt
 from skimage import measure
 import scipy
 import openpnm.models.physics as physics
-import vtk # optional for VTK writes, or use openpnm exporters
 
-# 1) Generate a 3D sphere packing (voxels)
-shape = [120, 120, 80]  # small domain for presentation; change as needed
+# 1) Generate sphere packing
+shape = [120, 120, 80]  # domain size
 radii = 4  # sphere radius in voxels (controls porosity / throat sizes)
 dist = scipy.stats.norm(loc=radii, scale=1.0)  # normal distribution of sphere sizes
-im = ps.generators.polydisperse_spheres(shape=shape, r_min=radii, porosity=0.5, dist=dist)  # initial porous structure
+im = ps.generators.polydisperse_spheres(shape=shape, r_min=radii, porosity=0.6, dist=dist)  # initial porous structure
 
-# optional: visualize central slice
+"""
+# visualisation of central slice
 plt.imshow(im[:, :, shape[2]//2])
 plt.title('Packed spheres slice')
 plt.show()
+"""
 
-# 2) Extract pore network from the image using PoreSpy SNOW + OpenPNM network extraction
+# 2) Extract pore network from the image using PoreSpy SNOW2 + OpenPNM network extraction
 snow_dict = ps.networks.snow2(im, voxel_size=1.0)
 pn = op.io.network_from_porespy(snow_dict.network)
-
-# If the above wrapper isn't available, use porespy's snow algorithm to get coordinates,
-# then build an OpenPNM network with those coords (see docs/examples).
+print(pn.throats)
 
 # 3) Create OpenPNM Project and add phase & physics
 proj = op.Project()
 phase = op.phase.Water(network=pn)
+phase.add_model(
+    propname='throat.hydraulic_size_factors',
+    model=op.models.geometry.hydraulic_size_factors.spheres_and_cylinders,
+    pore_diameter='pore.diameter',
+    throat_diameter='throat.diameter'
+)
 
+phase.add_model(propname='throat.hydraulic_conductance',
+                model=physics.hydraulic_conductance.hagen_poiseuille)
 
 # 4) Run Stokes-like flow (Darcy on network) to get fluxes
 flow = op.algorithms.StokesFlow(network=pn, phase=phase)
