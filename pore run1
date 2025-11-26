@@ -49,11 +49,20 @@ pn.add_model(
     throat_diameter='throat.diameter'
 )
 
+pn.add_model(
+    propname='throat.diffusive_size_factors',
+    model=op.models.geometry.diffusive_size_factors.pyramids_and_cuboids,
+    pore_diameter='pore.diameter',
+    throat_diameter='throat.diameter'
+)
+
 # 3) Create OpenPNM Project and add phase & physics
 proj = op.Project()
 phase = op.phase.Water(network=pn)
 phase['pore.viscosity'] = 3.15e-4  # Pa.s
 phase['throat.viscosity'] = 3.15e-4  # Pa.s
+phase['pore.diffusivity'] = 5e-10  # m2/s
+phase['pore.diffusivity'] = 5e-10  # m2/s
 
 phase.add_model(propname='throat.hydraulic_conductance',
                 model=physics.hydraulic_conductance.hagen_poiseuille,
@@ -67,7 +76,7 @@ phase.add_model(
     model=op.models.physics.diffusive_conductance.generic_diffusive,
     pore_diffusivity='pore.diffusivity',
     throat_diffusivity='throat.diffusivity',
-    size_factors='diffusive_size_factors'
+    size_factors='throat.diffusive_size_factors'
 )
 
 # 4) Run Stokes-like flow (Darcy on network) to get fluxes
@@ -99,7 +108,44 @@ ad.set_value_BC(pores=right_pores, values=0.0)  # outlet
 ad.run()
 C = ad['pore.concentration']
 
-# 6) Visualize pore concentrations (simple)
-plt.hist(C, bins=40)
-plt.xlabel('Pore concentration')
+# 6) Graphs
+fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+# Concentration histogram
+axes[0, 0].hist(C, bins=40, edgecolor='black', alpha=0.7)
+axes[0, 0].set_xlabel('Pore concentration (normalized)')
+axes[0, 0].set_ylabel('Frequency')
+axes[0, 0].set_title('Concentration Distribution')
+axes[0, 0].grid(True, alpha=0.3)
+
+# Pressure histogram
+axes[0, 1].hist(phase['pore.pressure'], bins=40, edgecolor='black', alpha=0.7, color='orange')
+axes[0, 1].set_xlabel('Pore pressure (Pa)')
+axes[0, 1].set_ylabel('Frequency')
+axes[0, 1].set_title('Pressure Distribution')
+axes[0, 1].grid(True, alpha=0.3)
+
+# Concentration vs X-position
+axes[1, 0].scatter(coords[:, 0], C, alpha=0.5, s=10)
+axes[1, 0].set_xlabel('X-coordinate (voxels)')
+axes[1, 0].set_ylabel('Concentration (normalized)')
+axes[1, 0].set_title('Concentration Profile Along Flow Direction')
+axes[1, 0].grid(True, alpha=0.3)
+
+# Pressure vs X-position
+axes[1, 1].scatter(coords[:, 0], phase['pore.pressure'], alpha=0.5, s=10, color='orange')
+axes[1, 1].set_xlabel('X-coordinate (voxels)')
+axes[1, 1].set_ylabel('Pressure (Pa)')
+axes[1, 1].set_title('Pressure Profile Along Flow Direction')
+axes[1, 1].grid(True, alpha=0.3)
+
+plt.tight_layout()
 plt.show()
+
+# Optional: Print network statistics
+print(f"\nNetwork Statistics:")
+print(f"Number of pores: {pn.Np}")
+print(f"Number of throats: {pn.Nt}")
+print(f"Average pore diameter: {pn['pore.diameter'].mean():.2f} voxels")
+print(f"Average throat diameter: {pn['throat.diameter'].mean():.2f} voxels")
+print(f"Porosity (approx): {im.sum() / im.size:.3f}")
