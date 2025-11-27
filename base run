@@ -13,13 +13,6 @@ radii = 2  # sphere radius in voxels (controls porosity / throat sizes)
 dist = scipy.stats.norm(loc=radii, scale=1.0)  # normal distribution of sphere sizes
 im = ps.generators.polydisperse_spheres(shape=shape, r_min=radii, porosity=0.6, dist=dist)  # initial porous structure
 
-"""
-# visualisation of central slice
-plt.imshow(im[:, :, shape[2]//2])
-plt.title('Packed spheres slice')
-plt.show()
-"""
-
 # 2) Extract pore network from the image using PoreSpy SNOW2 + OpenPNM network extraction
 snow_dict = ps.networks.snow2(im, voxel_size=1.0)
 pn = op.io.network_from_porespy(snow_dict.network)
