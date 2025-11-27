@@ -47,12 +47,17 @@ class Simulation:
     def _ensure_connectivity(self, pn):
         adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
+        largest_cluster = np.argmax(np.bincount(labels))
+        pores_in_largest = np.where(labels == largest_cluster)[0]
         
         if n_components > 1:
-            largest_cluster = np.argmax(np.bincount(labels))
-            pores_in_largest = np.where(labels == largest_cluster)[0]
-            throats_in_largest = pn.find_neighbor_throats(pores=pores_in_largest, mode='intersection')
-            
+            conns = pn['throat.conns']
+            pores_set = set(pores_in_largest)
+            throats_in_largest = np.array([
+                i for i, (p1, p2) in enumerate(conns) 
+                if p1 in pores_set and p2 in pores_set
+            ])
+
             pn_new = op.network.Network(
                 conns=pn['throat.conns'][throats_in_largest],
                 coords=pn['pore.coords'][pores_in_largest]
@@ -66,11 +71,14 @@ class Simulation:
                 pn_new['throat.inscribed_diameter'] = pn['throat.inscribed_diameter'][throats_in_largest]
             
             # Replace
-            pn.clear()
-            pn.update(pn_new)
-
+            pn = pn_new
+            
     def add_geometry_models(self):
         pn = self.pn
+
+        pn['pore.diameter'][pn['pore.diameter'] < 1e-6] = 1e-6
+        pn['throat.diameter'][pn['throat.diameter'] < 1e-6] = 1e-6
+        
         pn.add_model(propname='pore.volume',
                     model=op.models.geometry.pore_volume.sphere,
                     pore_diameter='pore.diameter')
@@ -119,11 +127,18 @@ class Simulation:
     
     def add_physics_models(self):
         phase = self.phase
-        phase.add_model(propname='throat.hydraulic_conductance',
-                       model=op.models.physics.hydraulic_conductance.hagen_poiseuille,
-                       pore_viscosity='pore.viscosity',
-                       throat_viscosity='throat.viscosity',
-                       size_factors='throat.hydraulic_size_factors')
+        try:
+            phase.add_model(propname='throat.hydraulic_conductance',
+                           model=op.models.physics.hydraulic_conductance.hagen_poiseuille,
+                           pore_viscosity='pore.viscosity',
+                           throat_viscosity='throat.viscosity',
+                           size_factors='throat.hydraulic_size_factors')
+            print("  ✓ Hydraulic conductance model added")
+            _ = phase['throat.hydraulic_conductance']
+        except Exception as e:
+            print(f"  ✗ Hydraulic conductance failed: {e}")
+            raise
+
         
         phase.add_model(propname='throat.diffusive_conductance',
                        model=op.models.physics.diffusive_conductance.generic_diffusive,
@@ -138,7 +153,7 @@ class Simulation:
                        pore_pressure='pore.pressure',
                        s_scheme='powerlaw')
         
-    def brew(self, brew_time, pour_rate, num_steps=1):
+    def brew(self, brew_time, pour_rate, num_pours=1):
         pn = self.pn
         phase = self.phase
         coords = pn.coords
@@ -148,10 +163,10 @@ class Simulation:
         inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
         outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
         
-        dt = brew_time / num_steps
+        dt = brew_time / num_pours
         self.dt = dt
         
-        for step in range(num_steps):
+        for step in range(num_pours):
             t = step * dt
             
             # Adjust inlet pressure based on pour rate

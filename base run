@@ -37,7 +37,12 @@ pores_in_largest = np.where(labels == largest_cluster)[0]
 # Extract only the largest connected cluster
 if n_components > 1:
     # Find throats connecting pores in largest cluster
-    throats_in_largest = pn.find_neighbor_throats(pores=pores_in_largest, mode='intersection')
+    conns = pn['throat.conns']
+    pores_set = set(pores_in_largest)
+    throats_in_largest = np.array([
+        i for i, (p1, p2) in enumerate(conns) 
+        if p1 in pores_set and p2 in pores_set
+    ])
     
     # Create a new network with only the largest cluster
     pn_connected = op.network.Network(
