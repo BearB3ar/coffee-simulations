@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from skimage import measure
 import scipy
 import openpnm.models.physics as physics
+from scipy.sparse.csgraph import connected_components
 
 # 1) Generate sphere packing
 shape = [120, 120, 80]  # domain size
@@ -24,6 +25,43 @@ snow_dict = ps.networks.snow2(im, voxel_size=1.0)
 pn = op.io.network_from_porespy(snow_dict.network)
 pn['pore.diameter'] = pn['pore.inscribed_diameter']
 pn['throat.diameter'] = pn['throat.inscribed_diameter']
+
+# 3) Ensure the network is fully connected by extracting the largest connected cluster
+# Build adjacency matrix
+adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
+
+# Find connected components
+n_components, labels = connected_components(
+    csgraph=adj_matrix, 
+    directed=False, 
+    return_labels=True
+)
+
+# Find the largest cluster
+largest_cluster = np.argmax(np.bincount(labels))
+pores_in_largest = np.where(labels == largest_cluster)[0]
+
+# Extract only the largest connected cluster
+if n_components > 1:
+    # Find throats connecting pores in largest cluster
+    throats_in_largest = pn.find_neighbor_throats(pores=pores_in_largest, mode='intersection')
+    
+    # Create a new network with only the largest cluster
+    pn_connected = op.network.Network(
+        conns=pn['throat.conns'][throats_in_largest],
+        coords=pn['pore.coords'][pores_in_largest]
+    )
+    
+    # Copy over properties for the connected pores/throats
+    pn_connected['pore.diameter'] = pn['pore.diameter'][pores_in_largest]
+    pn_connected['throat.diameter'] = pn['throat.diameter'][throats_in_largest]
+    if 'pore.inscribed_diameter' in pn:
+        pn_connected['pore.inscribed_diameter'] = pn['pore.inscribed_diameter'][pores_in_largest]
+    if 'throat.inscribed_diameter' in pn:
+        pn_connected['throat.inscribed_diameter'] = pn['throat.inscribed_diameter'][throats_in_largest]
+    
+    # Replace the original network
+    pn = pn_connected
 
 # Condition pn with geometric models
 pn.add_model(
@@ -56,7 +94,7 @@ pn.add_model(
     throat_diameter='throat.diameter'
 )
 
-# 3) Create OpenPNM Project and add phase & physics
+# 4) Create OpenPNM Project and add phase & physics
 proj = op.Project()
 phase = op.phase.Water(network=pn)
 phase['pore.viscosity'] = 3.15e-4  # Pa.s
@@ -79,7 +117,7 @@ phase.add_model(
     size_factors='throat.diffusive_size_factors'
 )
 
-# 4) Run Stokes-like flow (Darcy on network) to get fluxes
+# 5) Run Stokes-like flow (Darcy on network) to get fluxes
 flow = op.algorithms.StokesFlow(network=pn, phase=phase)
 coords = pn.coords
 tol = 1e-6
@@ -91,7 +129,7 @@ flow.set_value_BC(pores=right_pores, values=0.0)
 
 flow.run()
 
-# 5) Run advection-diffusion (steady/tracer)
+# 6) Run advection-diffusion (steady/tracer)
 ad = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
 phase.add_model(
     propname='throat.ad_dif_conductance',
@@ -108,7 +146,7 @@ ad.set_value_BC(pores=right_pores, values=0.0)  # outlet
 ad.run()
 C = ad['pore.concentration']
 
-# 6) Graphs
+# 7) Graphs
 fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
 # Concentration histogram
