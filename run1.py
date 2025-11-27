@@ -20,14 +20,19 @@ print(f"  Avg coordination number: {2*pn.Nt/pn.Np:.2f}")
 print(f"  Pore diameter: {pn['pore.diameter'].min():.3f} - {pn['pore.diameter'].max():.3f}")
 print(f"  Throat diameter: {pn['throat.diameter'].min():.3f} - {pn['throat.diameter'].max():.3f}")
 
-g = pn['throat.hydraulic_conductance']
+g = sim.phase["throat.hydraulic_conductance"]
 print(f"  Conductance: {g.min():.3e} - {g.max():.3e}")
 print(f"  Conductance ratio: {g.max()/g.min():.0e}")
 print(f"  Zero/negative conductances: {(g <= 0).sum()}")
 
+h = sim.phase["throat.diffusive_conductance"]
+print(f"  Conductance: {h.min():.3e} - {h.max():.3e}")
+print(f"  Conductance ratio: {h.max()/h.min():.0e}")
+print(f"  Zero/negative conductances: {(h <= 0).sum()}")
+
 sim.brew(
     brew_time = 180,
-    pour_rate = 50,
+    pour_rate = 2,
     num_pours = 1
 )
 

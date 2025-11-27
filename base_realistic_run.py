@@ -72,6 +72,39 @@ class Simulation:
             
             # Replace
             pn = pn_new
+            pore_diam = pn['pore.diameter'].copy()
+            throat_diam = pn['throat.diameter'].copy()
+                
+            # For each throat, check if it's reasonable relative to its pores
+            conns = pn['throat.conns'].copy()
+            valid_throats = []
+            for i in range(len(conns)):
+                p1, p2 = int(conns[i, 0]), int(conns[i, 1])
+                # Ensure indices are within bounds
+                if p1 < len(pore_diam) and p2 < len(pore_diam):
+                    # Throat should be at least 5% of average connected pore size
+                    avg_pore_diam = (pore_diam[p1] + pore_diam[p2]) / 2
+                    if throat_diam[i] > avg_pore_diam * 0.05:
+                        valid_throats.append(i)
+                
+            valid_throats = np.array(valid_throats)
+            print(f"  Removed {len(conns) - len(valid_throats)} pathological throats")
+            
+            if len(valid_throats) < len(conns) and len(valid_throats) > 0:
+                # Rebuild network with valid throats only
+                pn_filtered = op.network.Network(
+                    conns=pn['throat.conns'][valid_throats],
+                    coords=pn['pore.coords']
+                )
+                pn_filtered['pore.diameter'] = pn['pore.diameter']
+                pn_filtered['throat.diameter'] = pn['throat.diameter'][valid_throats]
+                if 'pore.inscribed_diameter' in pn:
+                    pn_filtered['pore.inscribed_diameter'] = pn['pore.inscribed_diameter']
+                if 'throat.inscribed_diameter' in pn:
+                    pn_filtered['throat.inscribed_diameter'] = pn['throat.inscribed_diameter'][valid_throats]
+                
+                pn.clear()
+                pn.update(pn_filtered)
             
     def add_geometry_models(self):
         pn = self.pn
@@ -127,19 +160,12 @@ class Simulation:
     
     def add_physics_models(self):
         phase = self.phase
-        try:
-            phase.add_model(propname='throat.hydraulic_conductance',
-                           model=op.models.physics.hydraulic_conductance.hagen_poiseuille,
-                           pore_viscosity='pore.viscosity',
-                           throat_viscosity='throat.viscosity',
-                           size_factors='throat.hydraulic_size_factors')
-            print("  ✓ Hydraulic conductance model added")
-            _ = phase['throat.hydraulic_conductance']
-        except Exception as e:
-            print(f"  ✗ Hydraulic conductance failed: {e}")
-            raise
+        phase.add_model(propname='throat.hydraulic_conductance',
+                        model=op.models.physics.hydraulic_conductance.hagen_poiseuille,
+                        pore_viscosity='pore.viscosity',
+                        throat_viscosity='throat.viscosity',
+                        size_factors='throat.hydraulic_size_factors')
 
-        
         phase.add_model(propname='throat.diffusive_conductance',
                        model=op.models.physics.diffusive_conductance.generic_diffusive,
                        pore_diffusivity='pore.diffusivity',
@@ -286,4 +312,3 @@ class Simulation:
             print(f"  Final max concentration: {self.concentrations[-1].max():.3f}")
             print(f"  Total brew time: {self.time_steps[-1]:.1f}s")
         print(f"{'='*60}\n")
-
