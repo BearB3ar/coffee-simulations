@@ -17,7 +17,7 @@ class Simulation:
 
     def generate_coffee_bed(self):
         if self.particle_size_dist == 'bimodal':
-            size1 = scipy.stats.norm(loc=1.5, scale=0.3)
+            size1 = scipy.stats.norm(loc=2, scale=0.3)
             size2 = scipy.stats.norm(loc=3.5, scale=0.5)
 
             im1 = ps.generators.polydisperse_spheres(shape=self.shape, r_min=1.0, porosity=self.porosity*0.4, dist=size1)
@@ -35,13 +35,23 @@ class Simulation:
         return im
     
     def extract_network(self):
-        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4) # 100 microns per voxel
+        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4, sigma=0.25, r_max=5) # 100 microns per voxel
         pn = op.io.network_from_porespy(snow_dict.network)
         pn['pore.diameter'] = pn['pore.inscribed_diameter']
         pn['throat.diameter'] = pn['throat.inscribed_diameter']
 
         self._ensure_connectivity(pn)
         self.pn = pn
+
+        adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
+        n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
+        print(f"Connected components: {n_components}")
+        print(f"Component sizes: {np.bincount(labels)}")
+
+        # Check for degree-1 and degree-2 nodes
+        degrees = np.array(adj_matrix.sum(axis=1)).flatten()
+        print(f"Pores with degree 1: {(degrees == 1).sum()}")
+        print(f"Pores with degree 2: {(degrees == 2).sum()}")
         return pn
     
     def _ensure_connectivity(self, pn):
@@ -72,39 +82,6 @@ class Simulation:
             
             # Replace
             pn = pn_new
-            pore_diam = pn['pore.diameter'].copy()
-            throat_diam = pn['throat.diameter'].copy()
-                
-            # For each throat, check if it's reasonable relative to its pores
-            conns = pn['throat.conns'].copy()
-            valid_throats = []
-            for i in range(len(conns)):
-                p1, p2 = int(conns[i, 0]), int(conns[i, 1])
-                # Ensure indices are within bounds
-                if p1 < len(pore_diam) and p2 < len(pore_diam):
-                    # Throat should be at least 5% of average connected pore size
-                    avg_pore_diam = (pore_diam[p1] + pore_diam[p2]) / 2
-                    if throat_diam[i] > avg_pore_diam * 0.05:
-                        valid_throats.append(i)
-                
-            valid_throats = np.array(valid_throats)
-            print(f"  Removed {len(conns) - len(valid_throats)} pathological throats")
-            
-            if len(valid_throats) < len(conns) and len(valid_throats) > 0:
-                # Rebuild network with valid throats only
-                pn_filtered = op.network.Network(
-                    conns=pn['throat.conns'][valid_throats],
-                    coords=pn['pore.coords']
-                )
-                pn_filtered['pore.diameter'] = pn['pore.diameter']
-                pn_filtered['throat.diameter'] = pn['throat.diameter'][valid_throats]
-                if 'pore.inscribed_diameter' in pn:
-                    pn_filtered['pore.inscribed_diameter'] = pn['pore.inscribed_diameter']
-                if 'throat.inscribed_diameter' in pn:
-                    pn_filtered['throat.inscribed_diameter'] = pn['throat.inscribed_diameter'][valid_throats]
-                
-                pn.clear()
-                pn.update(pn_filtered)
             
     def add_geometry_models(self):
         pn = self.pn
@@ -203,6 +180,7 @@ class Simulation:
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)
             flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
             flow.set_value_BC(pores=outlet_pores, values=0.0)
+
             flow.run()
             
             # Run advection-diffusion
@@ -212,7 +190,6 @@ class Simulation:
             if step == 0:
                 # Initialize with solute at inlet
                 phase['pore.concentration'] = 0.0
-                phase.update_model(propnames='pore.concentration')
             
             ad.set_value_BC(pores=inlet_pores, values=1.0)  # incoming water (high concentration)
             ad.set_value_BC(pores=outlet_pores, values=0.0)  # outlet
