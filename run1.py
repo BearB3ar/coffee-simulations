@@ -12,6 +12,7 @@ sim.add_geometry_models()
 sim.phase()
 sim.add_physics_models()
 
+"""
 pn = sim.pn
 print(f"\nDetailed Network Diagnostics:")
 print(f"  Total pores: {pn.Np}")
@@ -29,6 +30,7 @@ h = sim.phase["throat.diffusive_conductance"]
 print(f"  Conductance: {h.min():.3e} - {h.max():.3e}")
 print(f"  Conductance ratio: {h.max()/h.min():.0e}")
 print(f"  Zero/negative conductances: {(h <= 0).sum()}")
+"""
 
 sim.brew(
     brew_time = 180,

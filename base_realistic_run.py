@@ -35,7 +35,7 @@ class Simulation:
         return im
     
     def extract_network(self):
-        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4, sigma=0.25, r_max=5) # 100 microns per voxel
+        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4, sigma=0.3, r_max=5) # 100 microns per voxel
         pn = op.io.network_from_porespy(snow_dict.network)
         pn['pore.diameter'] = pn['pore.inscribed_diameter']
         pn['throat.diameter'] = pn['throat.inscribed_diameter']
