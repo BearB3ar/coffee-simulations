@@ -5,8 +5,15 @@ import matplotlib.pyplot as plt
 from scipy.sparse.csgraph import connected_components
 import scipy.stats
 
-class Compounds:
-    def __init__(self, solute_classes=None):
+class Simulation:
+    def __init__(self, domain_shape=[150,150,100], porosity = 0.4, temperature = 95, particle_size_dist = 'bimodal', solute_classes=None):
+        self.shape = domain_shape
+        self.porosity = porosity
+        self.temperature = temperature
+        self.particle_size_dist = particle_size_dist
+        self.time_steps = []
+        self.concentrations = []
+        self.pressures = []
         if solute_classes is None:
             self.solute_classes = {
                 'acids': {'k' : 0.05, 'amount' : 30},
@@ -15,17 +22,6 @@ class Compounds:
             }
         else:
             self.solute_classes = solute_classes
-
-
-class Simulation:
-    def __init__(self, domain_shape=[150,150,100], porosity = 0.4, temperature = 95, particle_size_dist = 'bimodal'):
-        self.shape = domain_shape
-        self.porosity = porosity
-        self.temperature = temperature
-        self.particle_size_dist = particle_size_dist
-        self.time_steps = []
-        self.concentrations = []
-        self.pressures = []
 
     def generate_coffee_bed(self):
         if self.particle_size_dist == 'bimodal':
@@ -174,6 +170,11 @@ class Simulation:
         pn = self.pn
         phase = self.phase
         coords = pn.coords
+
+        # Establish chemical composition
+        for solute_name, params in self.solute_classes.items():
+            phase[f'pore.{solute_name}_available'] = params['amount']
+            phase[f'pore.{solute_name}_concentration'] = 0.0
         
         # Define boundary conditions based on V60 geometry
         tol = 1e-6
