@@ -5,6 +5,18 @@ import matplotlib.pyplot as plt
 from scipy.sparse.csgraph import connected_components
 import scipy.stats
 
+class Compounds:
+    def __init__(self, solute_classes=None):
+        if solute_classes is None:
+            self.solute_classes = {
+                'acids': {'k' : 0.05, 'amount' : 30},
+                'sugars': {'k' : 0.02, 'amount' : 40},
+                'melanoidins': {'k': 0.05, 'amount' : 30}
+            }
+        else:
+            self.solute_classes = solute_classes
+
+
 class Simulation:
     def __init__(self, domain_shape=[150,150,100], porosity = 0.4, temperature = 95, particle_size_dist = 'bimodal'):
         self.shape = domain_shape
@@ -45,13 +57,15 @@ class Simulation:
 
         adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
+        """
         print(f"Connected components: {n_components}")
         print(f"Component sizes: {np.bincount(labels)}")
-
+        
         # Check for degree-1 and degree-2 nodes
         degrees = np.array(adj_matrix.sum(axis=1)).flatten()
         print(f"Pores with degree 1: {(degrees == 1).sum()}")
         print(f"Pores with degree 2: {(degrees == 2).sum()}")
+        """
         return pn
     
     def _ensure_connectivity(self, pn):

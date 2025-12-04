@@ -1,4 +1,5 @@
 import base_realistic_run 
+import matplotlib.pyplot as plt
 
 sim = base_realistic_run.Simulation(
     porosity = 0.42,
@@ -7,6 +8,13 @@ sim = base_realistic_run.Simulation(
 )
 
 sim.generate_coffee_bed()
+
+"""
+plt.imshow(sim.im[:, :, sim.shape[2]//2])
+plt.title('Packed spheres slice')
+plt.show()
+"""
+
 sim.extract_network()
 sim.add_geometry_models()
 sim.phase()
@@ -33,9 +41,9 @@ print(f"  Zero/negative conductances: {(h <= 0).sum()}")
 """
 
 sim.brew(
-    brew_time = 180,
-    pour_rate = 2,
-    num_pours = 1
+    brew_time = 150,
+    pour_rate = 5,
+    num_pours = 2
 )
 
 sim.plot_results()
