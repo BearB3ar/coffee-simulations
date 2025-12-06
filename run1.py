@@ -43,7 +43,7 @@ print(f"  Zero/negative conductances: {(h <= 0).sum()}")
 sim.brew(
     brew_time = 150,
     pour_rate = 5,
-    num_pours = 2
+    num_pours = 1
 )
 
 sim.plot_results()

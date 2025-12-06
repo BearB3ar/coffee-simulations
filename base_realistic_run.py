@@ -14,6 +14,7 @@ class Simulation:
         self.time_steps = []
         self.concentrations = []
         self.pressures = []
+        self.outlet_concentrations = []
         if solute_classes is None:
             self.solute_classes = {
                 'acids': {'k' : 0.05, 'amount' : 30},
@@ -173,7 +174,7 @@ class Simulation:
 
         # Establish chemical composition
         for solute_name, params in self.solute_classes.items():
-            phase[f'pore.{solute_name}_available'] = params['amount']
+            phase[f'pore.{solute_name}_available'] = float(params['amount'])
             phase[f'pore.{solute_name}_concentration'] = 0.0
         
         # Define boundary conditions based on V60 geometry
@@ -185,7 +186,7 @@ class Simulation:
         self.dt = dt
         
         for step in range(num_pours):
-            t = step * dt
+            t = (step + 1) * dt
             
             # Adjust inlet pressure based on pour rate
             # Pressure ~ pour_rate (proportional to flow rate)
@@ -197,22 +198,35 @@ class Simulation:
             flow.set_value_BC(pores=outlet_pores, values=0.0)
 
             flow.run()
-            
-            # Run advection-diffusion
-            ad = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
-            
+
             # Initial concentration for this step
             if step == 0:
                 # Initialize with solute at inlet
                 phase['pore.concentration'] = 0.0
+
+            for solute_name, params in self.solute_classes.items():
+                k = params['k']
+                available = phase[f'pore.{solute_name}_available']
+                extracted = k * available * dt
+                phase[f'pore.{solute_name}_available'] -= extracted
+                phase[f'pore.{solute_name}_concentration'] += extracted / pn['pore.volume']
             
-            ad.set_value_BC(pores=inlet_pores, values=1.0)  # incoming water (high concentration)
-            ad.set_value_BC(pores=outlet_pores, values=0.0)  # outlet
+            total_C = sum(phase[f'pore.{name}_concentration'] for name in self.solute_classes.keys())
+            phase['pore.concentration'] = total_C
+
+            # Run advection-diffusion
+            ad = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
+            
+            ad.set_value_BC(pores=inlet_pores, values=0.0) 
+            ad['pore.concentration'] = total_C
             ad.run()
-            
+
+            phase['pore.concentration'] = ad['pore.concentration'].copy()
+
             # Store results
             self.time_steps.append(t)
-            self.concentrations.append(ad['pore.concentration'].copy())
+            self.outlet_concentrations.append(phase['pore.concentration'][outlet_pores].mean())
+            self.concentrations.append(phase['pore.concentration'].copy())
             self.pressures.append(phase['pore.pressure'].copy())
 
     def plot_results(self):
@@ -275,6 +289,10 @@ class Simulation:
         axes[2, 1].set_title('Extraction Kinetics')
         axes[2, 1].grid(True, alpha=0.3)
         axes[2, 1].fill_between(self.time_steps, 0, extraction_rate, alpha=0.3, color='darkgreen')
+
+        # Plot 7: Outlet concentration over time
+        axes[0, 1].plot(self.time_steps, self.outlet_concentrations, 'o-', label='Outlet concentration', linewidth=2, color='blue')
+        axes[0, 1].set_title('Extraction: Outlet Concentration Over Time')
         
         plt.tight_layout()
         plt.show()
@@ -291,10 +309,10 @@ class Simulation:
         print(f"\nNetwork Properties:")
         print(f"  Number of pores: {pn.Np}")
         print(f"  Number of throats: {pn.Nt}")
-        print(f"  Avg pore diameter: {pn['pore.diameter'].mean():.3f} voxels")
-        print(f"  Avg throat diameter: {pn['throat.diameter'].mean():.3f} voxels")
-        print(f"  Pore diameter range: {pn['pore.diameter'].min():.3f} - {pn['pore.diameter'].max():.3f}")
-        print(f"  Throat diameter range: {pn['throat.diameter'].min():.3f} - {pn['throat.diameter'].max():.3f}")
+        print(f"  Avg pore diameter: {pn['pore.diameter'].mean():.5f} voxels")
+        print(f"  Avg throat diameter: {pn['throat.diameter'].mean():.5f} voxels")
+        print(f"  Pore diameter range: {pn['pore.diameter'].min():.5f} - {pn['pore.diameter'].max():.5f}")
+        print(f"  Throat diameter range: {pn['throat.diameter'].min():.5f} - {pn['throat.diameter'].max():.5f}")
         print(f"\nPhase Properties at {self.temperature}°C:")
         print(f"  Viscosity: {self.phase['pore.viscosity'][0]:.3e} Pa·s")
         print(f"  Diffusivity: {self.phase['pore.diffusivity'][0]:.3e} m²/s")
