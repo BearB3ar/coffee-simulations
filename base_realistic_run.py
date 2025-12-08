@@ -4,6 +4,7 @@ import openpnm as op
 import matplotlib.pyplot as plt
 from scipy.sparse.csgraph import connected_components
 import scipy.stats
+from pypardiso import spsolve
 
 class Simulation:
     def __init__(self, domain_shape=[150,150,100], porosity = 0.4, temperature = 95, particle_size_dist = 'bimodal', solute_classes=None):
@@ -194,6 +195,10 @@ class Simulation:
             
             # Run Stokes flow
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)
+
+            flow.settings['solver'] = 'spsolve'
+            flow.settings['spsolve'] = spsolve
+
             flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
             flow.set_value_BC(pores=outlet_pores, values=0.0)
 
@@ -217,6 +222,9 @@ class Simulation:
             # Run advection-diffusion
             ad = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
             
+            ad.settings['solver'] = 'spsolve'
+            ad.settings['spsolve'] = spsolve
+
             ad.set_value_BC(pores=inlet_pores, values=0.0) 
             ad['pore.concentration'] = total_C
             ad.run()
