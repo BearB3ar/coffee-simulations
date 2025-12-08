@@ -45,7 +45,7 @@ class Simulation:
         return im
     
     def extract_network(self):
-        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4, sigma=0.28, r_max=5) # 100 microns per voxel
+        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4, sigma=0.3, r_max=5) # 100 microns per voxel
         pn = op.io.network_from_porespy(snow_dict.network)
         pn['pore.diameter'] = pn['pore.inscribed_diameter']
         pn['throat.diameter'] = pn['throat.inscribed_diameter']
@@ -93,7 +93,7 @@ class Simulation:
                 pn_new['throat.inscribed_diameter'] = pn['throat.inscribed_diameter'][throats_in_largest]
             
             # Replace
-            pn = pn_new
+            self.pn = pn_new
             
     def add_geometry_models(self):
         pn = self.pn
@@ -177,6 +177,8 @@ class Simulation:
         for solute_name, params in self.solute_classes.items():
             phase[f'pore.{solute_name}_available'] = float(params['amount'])
             phase[f'pore.{solute_name}_concentration'] = 0.0
+
+        phase['pore.concentration'] = 0.0
         
         # Define boundary conditions based on V60 geometry
         tol = 1e-6
@@ -203,11 +205,7 @@ class Simulation:
             flow.set_value_BC(pores=outlet_pores, values=0.0)
 
             flow.run()
-
-            # Initial concentration for this step
-            if step == 0:
-                # Initialize with solute at inlet
-                phase['pore.concentration'] = 0.0
+            phase['pore.pressure'] = flow['pore.pressure']
 
             for solute_name, params in self.solute_classes.items():
                 k = params['k']
@@ -225,7 +223,8 @@ class Simulation:
             ad.settings['solver'] = 'spsolve'
             ad.settings['spsolve'] = spsolve
 
-            ad.set_value_BC(pores=inlet_pores, values=0.0) 
+            ad.set_value_BC(pores=inlet_pores, values=0.0)
+            ad.set_value_BC(pores=outlet_pores, values='outflow')
             ad['pore.concentration'] = total_C
             ad.run()
 
