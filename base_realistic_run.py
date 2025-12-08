@@ -7,7 +7,7 @@ import scipy.stats
 from pypardiso import spsolve
 
 class Simulation:
-    def __init__(self, domain_shape=[150,150,100], porosity = 0.4, temperature = 95, particle_size_dist = 'bimodal', solute_classes=None):
+    def __init__(self, domain_shape=[150,150,100], porosity = 0.44, temperature = 95, particle_size_dist = 'bimodal', solute_classes=None):
         self.shape = domain_shape
         self.porosity = porosity
         self.temperature = temperature
@@ -55,7 +55,7 @@ class Simulation:
 
         adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
-        """
+        
         print(f"Connected components: {n_components}")
         print(f"Component sizes: {np.bincount(labels)}")
         
@@ -63,7 +63,7 @@ class Simulation:
         degrees = np.array(adj_matrix.sum(axis=1)).flatten()
         print(f"Pores with degree 1: {(degrees == 1).sum()}")
         print(f"Pores with degree 2: {(degrees == 2).sum()}")
-        """
+        
         return pn
     
     def _ensure_connectivity(self, pn):
@@ -187,54 +187,52 @@ class Simulation:
         
         dt = brew_time / num_pours
         self.dt = dt
+
+        inlet_pressure = 1000 * (pour_rate / 50)  # Pa, scaled relative to 50 mL/s
+            
+        # Run Stokes flow
+        flow = op.algorithms.StokesFlow(network=pn, phase=phase)
+
+        flow.settings['solver'] = 'spsolve'
+        flow.settings['spsolve'] = spsolve
+
+        flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
+        flow.set_value_BC(pores=outlet_pores, values=0.0)
+        flow.run()
+
+        phase['pore.pressure'] = flow['pore.pressure']
+
+        # Implement transient advection diffusion solver
+        tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
+
+        tad.settings['solver'] = 'spsolve'
+        tad.settings['spsolve'] = spsolve
+
+        tad.set_value_BC(pores=inlet_pores, values=0.0)
+        tad['pore.concentration'] = 0.0
         
         for step in range(num_pours):
             t = (step + 1) * dt
-            
-            # Adjust inlet pressure based on pour rate
-            # Pressure ~ pour_rate (proportional to flow rate)
-            inlet_pressure = 1000 * (pour_rate / 50)  # Pa, scaled relative to 50 mL/s
-            
-            # Run Stokes flow
-            flow = op.algorithms.StokesFlow(network=pn, phase=phase)
 
-            flow.settings['solver'] = 'spsolve'
-            flow.settings['spsolve'] = spsolve
-
-            flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
-            flow.set_value_BC(pores=outlet_pores, values=0.0)
-
-            flow.run()
-            phase['pore.pressure'] = flow['pore.pressure']
-
+            # Calculate extraction source term R_source
+            R_source = np.zeros(pn.Np)
             for solute_name, params in self.solute_classes.items():
                 k = params['k']
                 available = phase[f'pore.{solute_name}_available']
                 extracted = k * available * dt
                 phase[f'pore.{solute_name}_available'] -= extracted
-                phase[f'pore.{solute_name}_concentration'] += extracted / pn['pore.volume']
+                R_source += extracted / (dt * pn['pore.volume'])
             
-            total_C = sum(phase[f'pore.{name}_concentration'] for name in self.solute_classes.keys())
-            phase['pore.concentration'] = total_C
-
-            # Run advection-diffusion
-            ad = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
-            
-            ad.settings['solver'] = 'spsolve'
-            ad.settings['spsolve'] = spsolve
-
-            ad.set_value_BC(pores=inlet_pores, values=0.0)
-            ad.set_value_BC(pores=outlet_pores, values='outflow')
-            ad['pore.concentration'] = total_C
-            ad.run()
-
-            phase['pore.concentration'] = ad['pore.concentration'].copy()
+            phase['pore.R'] = R_source
+            tad.set_source(propname='pore.R', pores=pn.pores())
+            tad.run(x0=tad['pore.concentration'],tspan=[t-dt, t])
+            phase['pore.concentration'] = tad['pore.concentration'].copy()
 
             # Store results
             self.time_steps.append(t)
             self.outlet_concentrations.append(phase['pore.concentration'][outlet_pores].mean())
             self.concentrations.append(phase['pore.concentration'].copy())
-            self.pressures.append(phase['pore.pressure'].copy())
+            self.pressures.append(flow['pore.pressure'].copy())
 
     def plot_results(self):
         pn = self.pn
