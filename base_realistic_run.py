@@ -18,9 +18,9 @@ class Simulation:
         self.outlet_concentrations = []
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 0.05, 'amount' : 30},
-                'sugars': {'k' : 0.02, 'amount' : 40},
-                'melanoidins': {'k': 0.05, 'amount' : 30}
+                'acids': {'k' : 5e-17, 'amount' : 30},
+                'sugars': {'k' : 2e-17, 'amount' : 40},
+                'melanoidins': {'k': 5e-17, 'amount' : 30}
             }
         else:
             self.solute_classes = solute_classes
@@ -56,13 +56,13 @@ class Simulation:
         adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
         
-        print(f"Connected components: {n_components}")
+        """print(f"Connected components: {n_components}")
         print(f"Component sizes: {np.bincount(labels)}")
         
         # Check for degree-1 and degree-2 nodes
         degrees = np.array(adj_matrix.sum(axis=1)).flatten()
         print(f"Pores with degree 1: {(degrees == 1).sum()}")
-        print(f"Pores with degree 2: {(degrees == 2).sum()}")
+        print(f"Pores with degree 2: {(degrees == 2).sum()}")"""
         
         return pn
     
@@ -201,6 +201,7 @@ class Simulation:
         flow.run()
 
         phase['pore.pressure'] = flow['pore.pressure']
+        phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
 
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
@@ -210,6 +211,7 @@ class Simulation:
 
         tad.set_value_BC(pores=inlet_pores, values=0.0)
         tad['pore.concentration'] = 0.0
+        C_initial = tad['pore.concentration'].copy()
         
         for step in range(num_pours):
             t = (step + 1) * dt
@@ -222,11 +224,14 @@ class Simulation:
                 extracted = k * available * dt
                 phase[f'pore.{solute_name}_available'] -= extracted
                 R_source += extracted / (dt * pn['pore.volume'])
+            print(R_source)
             
             phase['pore.R'] = R_source
             tad.set_source(propname='pore.R', pores=pn.pores())
-            tad.run(x0=tad['pore.concentration'],tspan=[t-dt, t])
+            tad.run(x0=C_initial,tspan=[t-dt, t])
+
             phase['pore.concentration'] = tad['pore.concentration'].copy()
+            C_initial = tad['pore.concentration'].copy()
 
             # Store results
             self.time_steps.append(t)
