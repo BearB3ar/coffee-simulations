@@ -16,11 +16,12 @@ class Simulation:
         self.concentrations = []
         self.pressures = []
         self.outlet_concentrations = []
+        self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 5e-17, 'amount' : 30},
-                'sugars': {'k' : 2e-17, 'amount' : 40},
-                'melanoidins': {'k': 5e-17, 'amount' : 30}
+                'acids': {'k' : 5e-10, 'amount' : 3000},
+                'sugars': {'k' : 2e-10, 'amount' : 4000},
+                'melanoidins': {'k': 5e-10, 'amount' : 3000}
             }
         else:
             self.solute_classes = solute_classes
@@ -222,13 +223,15 @@ class Simulation:
                 k = params['k']
                 available = phase[f'pore.{solute_name}_available']
                 extracted = k * available * dt
+                self.total_extracted += extracted.sum()
                 phase[f'pore.{solute_name}_available'] -= extracted
-                R_source += extracted / (dt * pn['pore.volume'])
-            print(R_source)
+                R_source += extracted
             
             phase['pore.R'] = R_source
+            #print(phase['pore.R'])
             tad.set_source(propname='pore.R', pores=pn.pores())
             tad.run(x0=C_initial,tspan=[t-dt, t])
+            print(tad['pore.concentration'])
 
             phase['pore.concentration'] = tad['pore.concentration'].copy()
             C_initial = tad['pore.concentration'].copy()
@@ -331,4 +334,5 @@ class Simulation:
             print(f"  Final mean concentration: {self.concentrations[-1].mean():.3f}")
             print(f"  Final max concentration: {self.concentrations[-1].max():.3f}")
             print(f"  Total brew time: {self.time_steps[-1]:.1f}s")
+            print(f"  Mass in fluid: {np.sum(self.concentrations[-1] * pn['pore.volume']):.15f}")
         print(f"{'='*60}\n")
