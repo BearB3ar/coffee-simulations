@@ -51,8 +51,7 @@ class Simulation:
         pn['pore.diameter'] = pn['pore.inscribed_diameter']
         pn['throat.diameter'] = pn['throat.inscribed_diameter']
 
-        self._ensure_connectivity(pn)
-        self.pn = pn
+        self.pn = self._ensure_connectivity(pn)
 
         adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
@@ -70,8 +69,15 @@ class Simulation:
     def _ensure_connectivity(self, pn):
         adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
-        largest_cluster = np.argmax(np.bincount(labels))
-        pores_in_largest = np.where(labels == largest_cluster)[0]
+
+        if n_components > 1:
+            largest_cluster = np.argmax(np.bincount(labels))
+            pores_to_trim = np.where(labels != largest_cluster)[0]
+            op.topotools.trim(network=pn, pores=pores_to_trim)
+            
+        return pn
+    
+        """pores_in_largest = np.where(labels == largest_cluster)[0]
         
         if n_components > 1:
             conns = pn['throat.conns']
@@ -94,7 +100,7 @@ class Simulation:
                 pn_new['throat.inscribed_diameter'] = pn['throat.inscribed_diameter'][throats_in_largest]
             
             # Replace
-            self.pn = pn_new
+            self.pn = pn_new"""
             
     def add_geometry_models(self):
         pn = self.pn
@@ -197,7 +203,7 @@ class Simulation:
         flow.settings['solver'] = 'spsolve'
         flow.settings['spsolve'] = spsolve
 
-        flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
+        flow.set_value_BC(pores=inlet_pores, values=0)
         flow.set_value_BC(pores=outlet_pores, values=0.0)
         flow.run()
 
@@ -228,10 +234,10 @@ class Simulation:
                 R_source += extracted
             
             phase['pore.R'] = R_source
-            #print(phase['pore.R'])
+            print(phase['pore.R'])
             tad.set_source(propname='pore.R', pores=pn.pores())
-            tad.run(x0=C_initial,tspan=[t-dt, t])
             print(tad['pore.concentration'])
+            tad.run(x0=C_initial,tspan=[t-dt, t])
 
             phase['pore.concentration'] = tad['pore.concentration'].copy()
             C_initial = tad['pore.concentration'].copy()

@@ -43,7 +43,7 @@ print(f"  Zero/negative conductances: {(h <= 0).sum()}")
 sim.brew(
     brew_time = 150,
     pour_rate = 1,
-    num_pours = 200
+    num_pours = 2
 )
 
 print(f"\nTotal extracted solutes: {sim.total_extracted:.15f} mg")
