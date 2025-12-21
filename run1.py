@@ -45,8 +45,5 @@ sim.brew(
     pour_rate = 1,
     num_pours = 2
 )
-
-print(f"\nTotal extracted solutes: {sim.total_extracted:.15f} mg")
-
-#sim.plot_results()
+sim.plot_results()
 sim.print_statistics()

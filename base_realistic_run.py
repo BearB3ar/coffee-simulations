@@ -7,7 +7,7 @@ import scipy.stats
 from pypardiso import spsolve
 
 class Simulation:
-    def __init__(self, domain_shape=[150,150,100], porosity = 0.44, temperature = 95, particle_size_dist = 'bimodal', solute_classes=None):
+    def __init__(self, domain_shape=[100,100,75], porosity = 0.44, temperature = 95, particle_size_dist = 'bimodal', solute_classes=None):
         self.shape = domain_shape
         self.porosity = porosity
         self.temperature = temperature
@@ -19,9 +19,9 @@ class Simulation:
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 5e-10, 'amount' : 3000},
-                'sugars': {'k' : 2e-10, 'amount' : 4000},
-                'melanoidins': {'k': 5e-10, 'amount' : 3000}
+                'acids': {'k' : 5e-4, 'amount' : 30e-9},
+                'sugars': {'k' : 2e-4, 'amount' : 40e-9},
+                'melanoidins': {'k': 5e-4, 'amount' : 30e-9}
             }
         else:
             self.solute_classes = solute_classes
@@ -76,31 +76,6 @@ class Simulation:
             op.topotools.trim(network=pn, pores=pores_to_trim)
             
         return pn
-    
-        """pores_in_largest = np.where(labels == largest_cluster)[0]
-        
-        if n_components > 1:
-            conns = pn['throat.conns']
-            pores_set = set(pores_in_largest)
-            throats_in_largest = np.array([
-                i for i, (p1, p2) in enumerate(conns) 
-                if p1 in pores_set and p2 in pores_set
-            ])
-
-            pn_new = op.network.Network(
-                conns=pn['throat.conns'][throats_in_largest],
-                coords=pn['pore.coords'][pores_in_largest]
-            )
-            
-            pn_new['pore.diameter'] = pn['pore.diameter'][pores_in_largest]
-            pn_new['throat.diameter'] = pn['throat.diameter'][throats_in_largest]
-            if 'pore.inscribed_diameter' in pn:
-                pn_new['pore.inscribed_diameter'] = pn['pore.inscribed_diameter'][pores_in_largest]
-            if 'throat.inscribed_diameter' in pn:
-                pn_new['throat.inscribed_diameter'] = pn['throat.inscribed_diameter'][throats_in_largest]
-            
-            # Replace
-            self.pn = pn_new"""
             
     def add_geometry_models(self):
         pn = self.pn
@@ -175,6 +150,13 @@ class Simulation:
                        pore_pressure='pore.pressure',
                        s_scheme='powerlaw')
         
+        phase.add_model(propname='pore.R_source',
+                        model=op.models.physics.source_terms.linear,
+                        X=0.0,
+                        A1=0.0,
+                        A2='pore.R',
+                        regen_mode='deferred')
+        
     def brew(self, brew_time, pour_rate, num_pours=1):
         pn = self.pn
         phase = self.phase
@@ -203,7 +185,7 @@ class Simulation:
         flow.settings['solver'] = 'spsolve'
         flow.settings['spsolve'] = spsolve
 
-        flow.set_value_BC(pores=inlet_pores, values=0)
+        flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
         flow.set_value_BC(pores=outlet_pores, values=0.0)
         flow.run()
 
@@ -229,15 +211,17 @@ class Simulation:
                 k = params['k']
                 available = phase[f'pore.{solute_name}_available']
                 extracted = k * available * dt
-                self.total_extracted += extracted.sum()
+                extracted = np.clip(extracted, 0, available)
                 phase[f'pore.{solute_name}_available'] -= extracted
                 R_source += extracted
             
             phase['pore.R'] = R_source
+            phase.regenerate_models(propnames=['pore.R_source'])
             print(phase['pore.R'])
-            tad.set_source(propname='pore.R', pores=pn.pores())
+            tad.set_source(propname='pore.R_source', pores=pn.pores())
             print(tad['pore.concentration'])
             tad.run(x0=C_initial,tspan=[t-dt, t])
+            print(tad['pore.concentration'])
 
             phase['pore.concentration'] = tad['pore.concentration'].copy()
             C_initial = tad['pore.concentration'].copy()
