@@ -46,3 +46,5 @@ My research workflow is (thus far) broken up into the following few segments:
     4. Larger scale simulations using other software to collect all results for all parameters of note
 
     5. Analyse results
+
+Progress tracker next step: Modify individual compound extraction to be realistic
