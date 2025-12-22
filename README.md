@@ -2,6 +2,7 @@
 The aim of my research is to gain a greater understanding on how brew parameters affect the extraction of pourover coffee. While research has already been done for some parameters, both formally and informally, there is an extended list of parameters not yet studied that I would like to be able to contribute to. 
 
 The parameters I would like to study are:
+
     Coffee dose
 
     Brew ratio
@@ -35,6 +36,7 @@ The parameters I would like to study are:
 Instead of simply repeating reseach on the parameters that have already been studied before, my research has the additional element of being done with pore-scale simulations, as opposed to macro-scale simulations or real world experiments.
 
 My research workflow is (thus far) broken up into the following few segments:
+
     1. Background research on the chemistry of coffee and physics of pourovers
 
     (CURRENT STAGE) -> 2. Preliminary simulations using OpenPNM to conduct sensitivity analysis 
