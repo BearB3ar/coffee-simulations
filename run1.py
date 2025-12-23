@@ -1,5 +1,5 @@
 import base_realistic_run 
-import matplotlib.pyplot as plt
+import numpy as np
 
 sim = base_realistic_run.Simulation(
     porosity = 0.42,
@@ -43,7 +43,7 @@ print(f"  Zero/negative conductances: {(h <= 0).sum()}")
 sim.brew(
     brew_time = 150,
     pour_rate = 1,
-    num_pours = 2
+    time_steps = 1
 )
-sim.plot_results()
-sim.print_statistics()
+#sim.plot_results()
+#sim.print_statistics()

@@ -19,9 +19,9 @@ class Simulation:
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 5e-4, 'amount' : 30e-9},
-                'sugars': {'k' : 2e-4, 'amount' : 40e-9},
-                'melanoidins': {'k': 5e-4, 'amount' : 30e-9}
+                'acids': {'k' : 0.05, 'amount' : 1e-6},
+                'sugars': {'k' : 0.02, 'amount' : 2e-6},
+                'melanoidins': {'k': 0.05, 'amount' : 1e-6}
             }
         else:
             self.solute_classes = solute_classes
@@ -157,7 +157,7 @@ class Simulation:
                         A2='pore.R',
                         regen_mode='deferred')
         
-    def brew(self, brew_time, pour_rate, num_pours=1):
+    def brew(self, brew_time, pour_rate, time_steps=1):
         pn = self.pn
         phase = self.phase
         coords = pn.coords
@@ -174,7 +174,7 @@ class Simulation:
         inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
         outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
         
-        dt = brew_time / num_pours
+        dt = brew_time / time_steps
         self.dt = dt
 
         inlet_pressure = 1000 * (pour_rate / 50)  # Pa, scaled relative to 50 mL/s
@@ -202,7 +202,7 @@ class Simulation:
         tad['pore.concentration'] = 0.0
         C_initial = tad['pore.concentration'].copy()
         
-        for step in range(num_pours):
+        for step in range(time_steps):
             t = (step + 1) * dt
 
             # Calculate extraction source term R_source
@@ -217,11 +217,12 @@ class Simulation:
             
             phase['pore.R'] = R_source
             phase.regenerate_models(propnames=['pore.R_source'])
-            print(phase['pore.R'])
+            print(np.mean(phase['pore.R']))
             tad.set_source(propname='pore.R_source', pores=pn.pores())
-            print(tad['pore.concentration'])
+            tad._build_b()
+            print("tad.b: ",np.mean(tad.b))
             tad.run(x0=C_initial,tspan=[t-dt, t])
-            print(tad['pore.concentration'])
+            print(np.mean(tad['pore.concentration']))
 
             phase['pore.concentration'] = tad['pore.concentration'].copy()
             C_initial = tad['pore.concentration'].copy()
@@ -251,7 +252,8 @@ class Simulation:
         C_mean = [C.mean() for C in self.concentrations]
         C_max = [C.max() for C in self.concentrations]
         axes[0, 1].plot(self.time_steps, C_mean, 'o-', label='Mean concentration', linewidth=2)
-        axes[0, 1].plot(self.time_steps, C_max, 's--', label='Max concentration', linewidth=2)
+        axes[0, 1].plot(self.time_steps, C_max, 's-', label='Max concentration', linewidth=2)
+        axes[0, 1].plot(self.time_steps, self.outlet_concentrations, '^-', label='Outlet concentration', linewidth=2)
         axes[0, 1].set_xlabel('Time (s)')
         axes[0, 1].set_ylabel('Concentration (normalized)')
         axes[0, 1].set_title('Extraction Progress')
@@ -292,10 +294,6 @@ class Simulation:
         axes[2, 1].set_title('Extraction Kinetics')
         axes[2, 1].grid(True, alpha=0.3)
         axes[2, 1].fill_between(self.time_steps, 0, extraction_rate, alpha=0.3, color='darkgreen')
-
-        # Plot 7: Outlet concentration over time
-        axes[0, 1].plot(self.time_steps, self.outlet_concentrations, 'o-', label='Outlet concentration', linewidth=2, color='blue')
-        axes[0, 1].set_title('Extraction: Outlet Concentration Over Time')
         
         plt.tight_layout()
         plt.show()
