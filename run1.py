@@ -20,7 +20,6 @@ sim.add_geometry_models()
 sim.phase()
 sim.add_physics_models()
 
-
 """pn = sim.pn
 print(f"\nDetailed Network Diagnostics:")
 print(f"  Total pores: {pn.Np}")
@@ -45,5 +44,6 @@ sim.brew(
     pour_rate = 1,
     time_steps = 1
 )
-#sim.plot_results()
-#sim.print_statistics()
+sim.plot_results()
+sim.print_statistics()
+#print(sim.mass_balance())

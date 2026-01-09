@@ -19,9 +19,9 @@ class Simulation:
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 0.05, 'amount' : 1e-6},
-                'sugars': {'k' : 0.02, 'amount' : 2e-6},
-                'melanoidins': {'k': 0.05, 'amount' : 1e-6}
+                'acids': {'k' : 0.05, 'concentration' : 100},
+                'sugars': {'k' : 0.02, 'concentration' : 200},
+                'melanoidins': {'k': 0.05, 'concentration' : 100}
             }
         else:
             self.solute_classes = solute_classes
@@ -164,7 +164,7 @@ class Simulation:
 
         # Establish chemical composition
         for solute_name, params in self.solute_classes.items():
-            phase[f'pore.{solute_name}_available'] = float(params['amount'])
+            phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume']
             phase[f'pore.{solute_name}_concentration'] = 0.0
 
         phase['pore.concentration'] = 0.0
@@ -213,16 +213,13 @@ class Simulation:
                 extracted = k * available * dt
                 extracted = np.clip(extracted, 0, available)
                 phase[f'pore.{solute_name}_available'] -= extracted
-                R_source += extracted
+                R_source += extracted / dt
             
             phase['pore.R'] = R_source
             phase.regenerate_models(propnames=['pore.R_source'])
             print(np.mean(phase['pore.R']))
             tad.set_source(propname='pore.R_source', pores=pn.pores())
-            tad._build_b()
-            print("tad.b: ",np.mean(tad.b))
             tad.run(x0=C_initial,tspan=[t-dt, t])
-            print(np.mean(tad['pore.concentration']))
 
             phase['pore.concentration'] = tad['pore.concentration'].copy()
             C_initial = tad['pore.concentration'].copy()
@@ -232,6 +229,15 @@ class Simulation:
             self.outlet_concentrations.append(phase['pore.concentration'][outlet_pores].mean())
             self.concentrations.append(phase['pore.concentration'].copy())
             self.pressures.append(flow['pore.pressure'].copy())
+
+    def mass_balance(self):
+        mass_in_fluid = np.sum(self.phase['pore.concentration'] * self.pn['pore.volume'])
+        total_mass_extracted = 0.0
+        for solute in self.solute_classes.keys():
+            initial_mass = float(self.solute_classes[solute]['concentration']) * self.pn['pore.volume'].sum()
+            remaining_mass = np.sum(self.phase[f'pore.{solute}_available'])
+            total_mass_extracted += (initial_mass - remaining_mass)
+        return mass_in_fluid, total_mass_extracted
 
     def plot_results(self):
         pn = self.pn
