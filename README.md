@@ -1,17 +1,13 @@
 # coffee-simulations
-The aim of my research is to gain a greater understanding on how brew parameters affect the extraction of pourover coffee. While research has already been done for some parameters, both formally and informally, there is an extended list of parameters not yet studied that I would like to be able to contribute to. 
+The primary aim of my research is to evaluate the suitability of pore-scale physics for the simulation of coffee extraction. Simulations have previously been carried out using smoothed particle hydrodynamics, in-silico and to name a few, but not without their own assumptions and drawbacks. While pore-scale physics have been employed for general studies of multi-phase flow through a porous medium, it has not yet been extended to coffee extraction. 
+
+However, just like other simulation methods used to study coffee extraction, assumptions will also need to be made for pore-scale physics to be a suitable simulation framework. The most important assumption is that the control volume of interest will be taken to be small enough that coffee grounds are assumed to be immobile compared to the fluid flow around them.  
+
+Additionally, should pore-scale physics be found to be a suitable simulation framework, a secondary aim is to use this pore-scale physics simulations to evaluate the effect of 7 variables listed below and their effect on coffee extraction.
 
 The parameters I would like to study are:
 
-    Coffee dose
-
     Brew ratio
-
-    Number of pours
-
-    Pour timing
-
-    Pour size
 
     Pour rate
 
@@ -19,32 +15,8 @@ The parameters I would like to study are:
 
     Water temperature
 
-    Preinfusion/bloom time
-
-    Preinfusion/bloom water amount
-
     Grind size
 
-    Grind size distribution
-
-    Bed depth
+    Grind size distribution (to a small extent)
 
     Packing method
-
-    Pour pattern
-
-Instead of simply repeating reseach on the parameters that have already been studied before, my research has the additional element of being done with pore-scale simulations, as opposed to macro-scale simulations or real world experiments.
-
-My research workflow is (thus far) broken up into the following few segments:
-
-    1. Background research on the chemistry of coffee and physics of pourovers
-
-    (CURRENT STAGE) -> 2. Preliminary simulations using OpenPNM to conduct sensitivity analysis 
-
-    3. Real world experiments to establish correlations for modelling brew parameters, especially indirect ones such as pour height
-
-    4. Larger scale simulations using other software to collect all results for all parameters of note
-
-    5. Analyse results
-
-Progress tracker next step: Modify individual compound extraction to be realistic
