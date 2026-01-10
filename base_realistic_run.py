@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from scipy.sparse.csgraph import connected_components
 import scipy.stats
 from pypardiso import spsolve
+from datetime import datetime
 
 class Simulation:
     def __init__(self, domain_shape=[100,100,75], porosity = 0.44, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
@@ -232,6 +233,7 @@ class Simulation:
                 phase.regenerate_models(propnames=['pore.R_source'])
                 tad.set_source(propname='pore.R_source', pores=pn.pores())
                 print(f"Now running simulations for {solute}")
+                print(datetime.now().strftime("%H:%M:%S"))
                 tad.run(x0=C_initial,tspan=[t-dt, t])
 
                 phase[f'pore.{solute}_concentration'] = tad[f'pore.{solute}_concentration'].copy()
@@ -287,10 +289,14 @@ class Simulation:
         
         n_steps = len(self.time_steps)
         fig, axes = plt.subplots(3, 2, figsize=(14, 12))
-        
+        C_final_acids = self.concentrations['acids'][-1]
+        C_final_sugars = self.concentrations['sugars'][-1]
+        C_final_melanoidins = self.concentrations['melanoidins'][-1]
+
         # Plot 1: Concentration distribution at final step
-        C_final = self.concentrations[-1]
-        axes[0, 0].hist(C_final, bins=40, edgecolor='black', alpha=0.7, color='brown')
+        axes[0, 0].hist(C_final_acids, bins=40, edgecolor='black', alpha=0.7, color='blue')
+        axes[0, 0].hist(C_final_sugars, bins=40, edgecolor='black', alpha=0.7, color='red')
+        axes[0, 0].hist(C_final_melanoidins, bins=40, edgecolor='black', alpha=0.7, color='green')
         axes[0, 0].set_xlabel('Pore concentration (normalized)')
         axes[0, 0].set_ylabel('Frequency')
         axes[0, 0].set_title(f'Final Concentration Distribution (t={self.time_steps[-1]:.1f}s)')
@@ -317,7 +323,9 @@ class Simulation:
         axes[1, 0].grid(True, alpha=0.3)
         
         # Plot 4: Concentration profile (final)
-        axes[1, 1].scatter(coords[:, 2], C_final, alpha=0.5, s=10, color='brown')
+        axes[1, 1].scatter(coords[:, 2], C_final_acids, alpha=0.5, s=10, color='blue')
+        axes[1, 1].scatter(coords[:, 2], C_final_sugars, alpha=0.5, s=10, color='red')
+        axes[1, 1].scatter(coords[:, 2], C_final_melanoidins, alpha=0.5, s=10, color='green')
         axes[1, 1].set_xlabel('Z-coordinate (voxels)')
         axes[1, 1].set_ylabel('Concentration (normalized)')
         axes[1, 1].set_title('Extraction Profile Along Flow (Final)')
@@ -369,8 +377,9 @@ class Simulation:
         print(f"  Diffusivity: {self.phase['pore.diffusivity'][0]:.3e} m²/s")
         print(f"\nBrewing Progress:")
         if self.concentrations:
-            print(f"  Final mean concentration: {self.concentrations[-1].mean():.3f}")
-            print(f"  Final max concentration: {self.concentrations[-1].max():.3f}")
-            print(f"  Total brew time: {self.time_steps[-1]:.1f}s")
-            print(f"  Mass in fluid: {np.sum(self.concentrations[-1] * pn['pore.volume']):.15f}")
+            for solute in self.solute_classes.keys():
+                print(f"  Final mean concentration: {self.concentrations[solute][-1].mean():.3f}")
+                print(f"  Final max concentration: {self.concentrations[solute][-1].max():.3f}")
+                print(f"  Total brew time: {self.time_steps[-1]:.1f}s")
+                print(f"  Mass in fluid: {np.sum(self.concentrations[solute][-1] * pn['pore.volume']):.15f}")
         print(f"{'='*60}\n")
