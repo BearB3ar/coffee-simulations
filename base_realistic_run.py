@@ -13,9 +13,17 @@ class Simulation:
         self.temperature = temperature
         self.particle_size_dist = particle_size_dist
         self.time_steps = []
-        self.concentrations = []
+        self.concentrations = {
+            'acids': [],
+            'sugars': [],
+            'melanoidins': []
+        }
         self.pressures = []
-        self.outlet_concentrations = []
+        self.outlet_concentrations = {
+            'acids': [],
+            'sugars': [],
+            'melanoidins': []
+        }
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
@@ -168,11 +176,6 @@ class Simulation:
         phase = self.phase
         coords = pn.coords
 
-        # Establish chemical composition
-        for solute_name, params in self.solute_classes.items():
-            phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume']
-            phase[f'pore.{solute_name}_concentration'] = 0.0
-
         phase['pore.concentration'] = 0.0
         
         # Define boundary conditions based on V60 geometry
@@ -195,6 +198,8 @@ class Simulation:
         flow.set_value_BC(pores=outlet_pores, values=0.0)
         flow.run()
 
+        self.pressures.append(flow['pore.pressure'].copy())
+
         phase['pore.pressure'] = flow['pore.pressure']
         phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
 
@@ -203,11 +208,39 @@ class Simulation:
 
         tad.settings['solver'] = 'spsolve'
         tad.settings['spsolve'] = spsolve
-
-        tad.set_value_BC(pores=inlet_pores, values=0.0)
-        tad['pore.concentration'] = 0.0
-        C_initial = tad['pore.concentration'].copy()
         
+        for solute, params in self.solute_classes.items():
+            #set up tad for each solute
+            tad.set_value_BC(pores=inlet_pores, values=0.0)
+            tad['pore.concentration'] = 0.0
+            C_initial = tad['pore.concentration'].copy()
+
+            #Prepare extraction source term for each solute
+            phase[f'pore.{solute}_available'] = float(params['concentration']) * pn['pore.volume']
+            phase[f'pore.{solute}_concentration'] = 0.0
+
+            for step in range(time_steps):
+                t = (step + 1) * dt
+
+                R_source = np.zeros(pn.Np)
+                extracted = np.clip(params['k'] * phase[f'pore.{solute}_available'] * dt, 0, phase[f'pore.{solute}_available'])
+                phase[f'pore.{solute}_available'] -= extracted
+                R_source += extracted / dt
+
+                phase['pore.R'] = R_source
+                phase.regenerate_models(propnames=['pore.R_source'])
+                tad.set_source(propname='pore.R_source', pores=pn.pores())
+                tad.run(x0=C_initial,tspan=[t-dt, t])
+
+                phase['pore.concentration'] = tad['pore.concentration'].copy()
+                C_initial = tad['pore.concentration'].copy()
+
+                self.outlet_concentrations[solute].append(phase['pore.concentration'][outlet_pores].mean())
+                self.concentrations[solute].append(phase['pore.concentration'].copy())
+                if solute == list(self.solute_classes.keys())[0]:
+                    self.time_steps.append(t)
+                
+        """
         for step in range(time_steps):
             t = (step + 1) * dt
 
@@ -235,6 +268,7 @@ class Simulation:
             self.outlet_concentrations.append(phase['pore.concentration'][outlet_pores].mean())
             self.concentrations.append(phase['pore.concentration'].copy())
             self.pressures.append(flow['pore.pressure'].copy())
+        """
 
     def mass_balance(self):
         mass_in_fluid = np.sum(self.phase['pore.concentration'] * self.pn['pore.volume'])
@@ -259,7 +293,7 @@ class Simulation:
         axes[0, 0].set_ylabel('Frequency')
         axes[0, 0].set_title(f'Final Concentration Distribution (t={self.time_steps[-1]:.1f}s)')
         axes[0, 0].grid(True, alpha=0.3)
-        
+        """
         # Plot 2: Concentration evolution
         C_mean = [C.mean() for C in self.concentrations]
         C_max = [C.max() for C in self.concentrations]
@@ -271,7 +305,7 @@ class Simulation:
         axes[0, 1].set_title('Extraction Progress')
         axes[0, 1].legend()
         axes[0, 1].grid(True, alpha=0.3)
-        
+        """
         # Plot 3: Pressure profile (final)
         P_final = self.pressures[-1]
         axes[1, 0].scatter(coords[:, 2], P_final, alpha=0.5, s=10, color='red')
@@ -297,7 +331,8 @@ class Simulation:
         axes[2, 0].set_title('Pore/Throat Size Distribution')
         axes[2, 0].legend()
         axes[2, 0].grid(True, alpha=0.3)
-        
+
+        """
         # Plot 6: Extraction kinetics (cumulative extraction)
         extraction_rate = [C.mean() for C in self.concentrations]
         axes[2, 1].plot(self.time_steps, extraction_rate, 'o-', linewidth=2, color='darkgreen')
@@ -306,6 +341,7 @@ class Simulation:
         axes[2, 1].set_title('Extraction Kinetics')
         axes[2, 1].grid(True, alpha=0.3)
         axes[2, 1].fill_between(self.time_steps, 0, extraction_rate, alpha=0.3, color='darkgreen')
+        """
         
         plt.tight_layout()
         plt.show()
