@@ -7,7 +7,7 @@ import scipy.stats
 from pypardiso import spsolve
 
 class Simulation:
-    def __init__(self, domain_shape=[100,100,75], porosity = 0.44, temperature = 95, particle_size_dist = 'bimodal', solute_classes=None):
+    def __init__(self, domain_shape=[100,100,75], porosity = 0.44, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
         self.shape = domain_shape
         self.porosity = porosity
         self.temperature = temperature
@@ -27,21 +27,27 @@ class Simulation:
             self.solute_classes = solute_classes
 
     def generate_coffee_bed(self):
-        if self.particle_size_dist == 'bimodal':
-            size1 = scipy.stats.norm(loc=2, scale=0.3)
-            size2 = scipy.stats.norm(loc=3.5, scale=0.5)
+        if self.particle_size_dist == "twin_lognormal":
+            x_axis = np.arange(0.5,50,0.1)
+            target_peak = scipy.stats.lognorm(s=0.4, scale=3.8)
+            weight_target = 0.92
+            fines_peak = scipy.stats.lognorm(s=0.8, scale=0.96)
+            weight_fines = 0.08
 
-            im1 = ps.generators.polydisperse_spheres(shape=self.shape, r_min=1.0, porosity=self.porosity*0.4, dist=size1)
-            im2 = ps.generators.polydisperse_spheres(shape=self.shape, r_min=2.0, porosity=self.porosity*0.6, dist=size2)
-            im = np.logical_or(im1, im2).astype(int)
-        elif self.particle_size_dist == 'lognormal':
-            dist = scipy.stats.lognorm(s=0.5, scale=2.5)
-            im = ps.generators.polydisperse_spheres(shape=self.shape, r_min=1.0, porosity=self.porosity, dist=dist)
+            probs = (target_peak.pdf(x_axis) * weight_target) + (fines_peak.pdf(x_axis) * weight_fines)
+            probs = probs / probs.sum()
+            custom_dist_object = scipy.stats.rv_discrete(name='coffee_dist', values=(x_axis, probs))
 
-        else: 
-            # Default to monodisperse
-            im = ps.generators.polydisperse_spheres(shape=self.shape, r_min=2.5, porosity=self.porosity)
+            im = ps.generators.polydisperse_spheres(shape=self.shape, r_min=0.5, porosity=self.porosity, dist=custom_dist_object)
 
+        elif self.particle_size_dist == "bimodal":
+            target_dist = scipy.stats.norm(loc=(650e-6/2)/1e-4, scale=0.5)
+            fines_dist = scipy.stats.norm(loc=(100e-6/2)/1e-4, scale=1)
+            im_main = ps.generators.polydisperse_spheres(shape=self.shape, r_min=2, porosity=self.porosity*0.9, dist=target_dist)
+            im_fines = ps.generators.polydisperse_spheres(shape=self.shape, r_min=0.5, porosity=self.porosity*0.1, dist=fines_dist)
+
+            im = np.logical_or(im_main, im_fines).astype(int)
+        
         self.im = im
         return im
     

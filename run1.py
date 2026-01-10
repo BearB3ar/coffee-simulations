@@ -1,10 +1,11 @@
 import base_realistic_run 
 import numpy as np
+import matplotlib.pyplot as plt
 
 sim = base_realistic_run.Simulation(
     porosity = 0.42,
     temperature = 95,
-    particle_size_dist = 'bimodal'
+    particle_size_dist = 'twin_lognormal'
 )
 
 sim.generate_coffee_bed()
