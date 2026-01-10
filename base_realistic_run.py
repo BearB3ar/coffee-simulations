@@ -208,12 +208,13 @@ class Simulation:
 
         tad.settings['solver'] = 'spsolve'
         tad.settings['spsolve'] = spsolve
+        tad.set_value_BC(pores=inlet_pores, values=0.0)
         
         for solute, params in self.solute_classes.items():
+            
             #set up tad for each solute
-            tad.set_value_BC(pores=inlet_pores, values=0.0)
-            tad['pore.concentration'] = 0.0
-            C_initial = tad['pore.concentration'].copy()
+            tad[f'pore.{solute}_concentration'] = 0.0
+            C_initial = tad[f'pore.{solute}_concentration'].copy()
 
             #Prepare extraction source term for each solute
             phase[f'pore.{solute}_available'] = float(params['concentration']) * pn['pore.volume']
@@ -230,13 +231,14 @@ class Simulation:
                 phase['pore.R'] = R_source
                 phase.regenerate_models(propnames=['pore.R_source'])
                 tad.set_source(propname='pore.R_source', pores=pn.pores())
+                print(f"Now running simulations for {solute}")
                 tad.run(x0=C_initial,tspan=[t-dt, t])
 
-                phase['pore.concentration'] = tad['pore.concentration'].copy()
-                C_initial = tad['pore.concentration'].copy()
+                phase[f'pore.{solute}_concentration'] = tad[f'pore.{solute}_concentration'].copy()
+                C_initial = tad[f'pore.{solute}_concentration'].copy()
 
-                self.outlet_concentrations[solute].append(phase['pore.concentration'][outlet_pores].mean())
-                self.concentrations[solute].append(phase['pore.concentration'].copy())
+                self.outlet_concentrations[solute].append(phase[f'pore.{solute}_concentration'][outlet_pores].mean())
+                self.concentrations[solute].append(phase[f'pore.{solute}_concentration'].copy())
                 if solute == list(self.solute_classes.keys())[0]:
                     self.time_steps.append(t)
                 
