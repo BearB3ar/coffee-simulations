@@ -28,7 +28,7 @@ class Simulation:
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 0.05, 'concentration' : 100},
+                'acids': {'k' : 0.05, 'concentration' : 400},
                 'sugars': {'k' : 0.02, 'concentration' : 200},
                 'melanoidins': {'k': 0.05, 'concentration' : 100}
             }
@@ -198,6 +198,7 @@ class Simulation:
         flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
         flow.set_value_BC(pores=outlet_pores, values=0.0)
         flow.run()
+        self.pressures.append(flow['pore.pressure'].copy())
 
         self.pressures.append(flow['pore.pressure'].copy())
 
@@ -209,70 +210,39 @@ class Simulation:
 
         tad.settings['solver'] = 'spsolve'
         tad.settings['spsolve'] = spsolve
-        tad.set_value_BC(pores=inlet_pores, values=0.0)
-        
-        for solute, params in self.solute_classes.items():
-            
-            #set up tad for each solute
-            tad[f'pore.{solute}_concentration'] = 0.0
-            C_initial = tad[f'pore.{solute}_concentration'].copy()
 
-            #Prepare extraction source term for each solute
-            phase[f'pore.{solute}_available'] = float(params['concentration']) * pn['pore.volume']
-            phase[f'pore.{solute}_concentration'] = 0.0
+        for solute_name, params in self.solute_classes.items():
+            tad['pore.concentration'] = 0.0
+            C_initial = tad['pore.concentration'].copy()
+            phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume']
+            phase[f'pore.{solute_name}_concentration'] = 0.0
 
             for step in range(time_steps):
                 t = (step + 1) * dt
 
+                # Calculate extraction source term R_source
                 R_source = np.zeros(pn.Np)
-                extracted = np.clip(params['k'] * phase[f'pore.{solute}_available'] * dt, 0, phase[f'pore.{solute}_available'])
-                phase[f'pore.{solute}_available'] -= extracted
-                R_source += extracted / dt
-
-                phase['pore.R'] = R_source
-                phase.regenerate_models(propnames=['pore.R_source'])
-                tad.set_source(propname='pore.R_source', pores=pn.pores())
-                print(f"Now running simulations for {solute}")
-                print(datetime.now().strftime("%H:%M:%S"))
-                tad.run(x0=C_initial,tspan=[t-dt, t])
-
-                phase[f'pore.{solute}_concentration'] = tad[f'pore.{solute}_concentration'].copy()
-                C_initial = tad[f'pore.{solute}_concentration'].copy()
-
-                self.outlet_concentrations[solute].append(phase[f'pore.{solute}_concentration'][outlet_pores].mean())
-                self.concentrations[solute].append(phase[f'pore.{solute}_concentration'].copy())
-                if solute == list(self.solute_classes.keys())[0]:
-                    self.time_steps.append(t)
-                
-        """
-        for step in range(time_steps):
-            t = (step + 1) * dt
-
-            # Calculate extraction source term R_source
-            R_source = np.zeros(pn.Np)
-            for solute_name, params in self.solute_classes.items():
-                k = params['k']
                 available = phase[f'pore.{solute_name}_available']
-                extracted = k * available * dt
+                extracted = params['k'] * available * dt
                 extracted = np.clip(extracted, 0, available)
                 phase[f'pore.{solute_name}_available'] -= extracted
                 R_source += extracted / dt
-            
-            phase['pore.R'] = R_source
-            phase.regenerate_models(propnames=['pore.R_source'])
-            print(np.mean(phase['pore.R']))
-            tad.set_source(propname='pore.R_source', pores=pn.pores())
-            tad.run(x0=C_initial,tspan=[t-dt, t])
+                
+                phase['pore.R'] = R_source
+                phase.regenerate_models(propnames=['pore.R_source'])
+                #print(np.mean(phase['pore.R']))
+                tad.set_source(propname='pore.R_source', pores=pn.pores())
+                print(f"Solving for {solute_name}, time step {step+1}")
+                tad.run(x0=C_initial,tspan=[t-dt, t])
 
-            phase['pore.concentration'] = tad['pore.concentration'].copy()
-            C_initial = tad['pore.concentration'].copy()
+                phase['pore.concentration'] = tad['pore.concentration'].copy()
+                C_initial = tad['pore.concentration'].copy()
 
-            # Store results
-            self.time_steps.append(t)
-            self.outlet_concentrations.append(phase['pore.concentration'][outlet_pores].mean())
-            self.concentrations.append(phase['pore.concentration'].copy())
-            self.pressures.append(flow['pore.pressure'].copy())
-        """
+                # Store results
+                if solute_name == 'acids':
+                    self.time_steps.append(t)
+                self.outlet_concentrations[solute_name].append(phase['pore.concentration'][outlet_pores].mean())
+                self.concentrations[solute_name].append(phase['pore.concentration'].copy())
 
     def mass_balance(self):
         mass_in_fluid = np.sum(self.phase['pore.concentration'] * self.pn['pore.volume'])
@@ -376,10 +346,12 @@ class Simulation:
         print(f"  Viscosity: {self.phase['pore.viscosity'][0]:.3e} Pa·s")
         print(f"  Diffusivity: {self.phase['pore.diffusivity'][0]:.3e} m²/s")
         print(f"\nBrewing Progress:")
+        print(f"  Total brew time: {self.time_steps[-1]:.1f}s")
         if self.concentrations:
             for solute in self.solute_classes.keys():
+                print(f" {solute} statistics:")
                 print(f"  Final mean concentration: {self.concentrations[solute][-1].mean():.3f}")
                 print(f"  Final max concentration: {self.concentrations[solute][-1].max():.3f}")
-                print(f"  Total brew time: {self.time_steps[-1]:.1f}s")
                 print(f"  Mass in fluid: {np.sum(self.concentrations[solute][-1] * pn['pore.volume']):.15f}")
+                print()
         print(f"{'='*60}\n")
