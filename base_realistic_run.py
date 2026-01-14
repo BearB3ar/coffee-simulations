@@ -278,7 +278,7 @@ class Simulation:
         
         # Plot 3: Concentration profile (final)
         for solute in self.solute_classes.keys():
-            axes[0, 0].scatter(coords[:, 2], self.concentrations[solute][-1], alpha=0.5, s=10, label=solute)
+            axes[1, 1].scatter(coords[:, 2], self.concentrations[solute][-1], alpha=0.5, s=10, label=solute)
         axes[1, 1].set_xlabel('Z-coordinate (voxels)')
         axes[1, 1].set_ylabel('Concentration (normalized)')
         axes[1, 1].set_title('Extraction Profile Along Flow (Final)')
@@ -304,8 +304,14 @@ class Simulation:
         axes[0,1].set_title('Outlet Mass Frequency')
         axes[0,1].grid(True, alpha=0.3)
 
-
         # Plot 6: Outlet mass with respect to position
+        for solute in self.solute_classes.keys():
+            mass = self.concentrations[solute][-1] * pn['pore.volume']
+            axes[0, 2].scatter(coords[:, 2], mass, alpha=0.5, s=10, label=solute)
+        axes[0, 2].set_xlabel('Z-coordinate (voxels)')
+        axes[0, 2].set_ylabel('Mass (kg)')
+        axes[0, 2].set_title('Mass Profile Along Flow (Final)')
+        axes[0, 2].grid(True, alpha=0.3)
 
         plt.tight_layout()
         plt.show()
