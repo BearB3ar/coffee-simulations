@@ -267,20 +267,8 @@ class Simulation:
         axes[0, 0].set_ylabel('Frequency')
         axes[0, 0].set_title(f'Final Concentration Distribution (t={self.time_steps[-1]:.1f}s)')
         axes[0, 0].grid(True, alpha=0.3)
-        """
-        # Plot 2: Concentration evolution
-        C_mean = [C.mean() for C in self.concentrations]
-        C_max = [C.max() for C in self.concentrations]
-        axes[0, 1].plot(self.time_steps, C_mean, 'o-', label='Mean concentration', linewidth=2)
-        axes[0, 1].plot(self.time_steps, C_max, 's-', label='Max concentration', linewidth=2)
-        axes[0, 1].plot(self.time_steps, self.outlet_concentrations, '^-', label='Outlet concentration', linewidth=2)
-        axes[0, 1].set_xlabel('Time (s)')
-        axes[0, 1].set_ylabel('Concentration (normalized)')
-        axes[0, 1].set_title('Extraction Progress')
-        axes[0, 1].legend()
-        axes[0, 1].grid(True, alpha=0.3)
-        """
-        # Plot 3: Pressure profile (final)
+
+        # Plot 2: Pressure profile (final)
         P_final = self.pressures[-1]
         axes[1, 0].scatter(coords[:, 2], P_final, alpha=0.5, s=10, color='red')
         axes[1, 0].set_xlabel('Z-coordinate (voxels)')
@@ -288,7 +276,7 @@ class Simulation:
         axes[1, 0].set_title('Pressure Profile Along Flow Direction (Final)')
         axes[1, 0].grid(True, alpha=0.3)
         
-        # Plot 4: Concentration profile (final)
+        # Plot 3: Concentration profile (final)
         for solute in self.solute_classes.keys():
             axes[0, 0].scatter(coords[:, 2], self.concentrations[solute][-1], alpha=0.5, s=10, label=solute)
         axes[1, 1].set_xlabel('Z-coordinate (voxels)')
@@ -296,7 +284,7 @@ class Simulation:
         axes[1, 1].set_title('Extraction Profile Along Flow (Final)')
         axes[1, 1].grid(True, alpha=0.3)
         
-        # Plot 5: Network statistics
+        # Plot 4: Network statistics
         pore_diam = pn['pore.diameter']
         throat_diam = pn['throat.diameter']
         axes[2, 0].hist(pore_diam, bins=30, alpha=0.6, label='Pores', edgecolor='black')
@@ -307,17 +295,18 @@ class Simulation:
         axes[2, 0].legend()
         axes[2, 0].grid(True, alpha=0.3)
 
-        """
-        # Plot 6: Extraction kinetics (cumulative extraction)
-        extraction_rate = [C.mean() for C in self.concentrations]
-        axes[2, 1].plot(self.time_steps, extraction_rate, 'o-', linewidth=2, color='darkgreen')
-        axes[2, 1].set_xlabel('Time (s)')
-        axes[2, 1].set_ylabel('Average extracted concentration')
-        axes[2, 1].set_title('Extraction Kinetics')
-        axes[2, 1].grid(True, alpha=0.3)
-        axes[2, 1].fill_between(self.time_steps, 0, extraction_rate, alpha=0.3, color='darkgreen')
-        """
-        
+        # Plot 5: Outlet mass frequency
+        for solute in self.solute_classes.keys():
+            mass = self.concentrations[solute][-1] * pn['pore.volume']
+            axes[0,1].hist(mass, bins=40, edgecolor='black', alpha=0.7, label=solute)
+        axes[0,1].set_xlabel('Outlet mass (kg)')
+        axes[0,1].set_ylabel('Frequency')
+        axes[0,1].set_title('Outlet Mass Frequency')
+        axes[0,1].grid(True, alpha=0.3)
+
+
+        # Plot 6: Outlet mass with respect to position
+
         plt.tight_layout()
         plt.show()
     
