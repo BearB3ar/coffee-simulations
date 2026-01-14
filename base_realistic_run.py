@@ -4,7 +4,7 @@ import openpnm as op
 import matplotlib.pyplot as plt
 from scipy.sparse.csgraph import connected_components
 import scipy.stats
-from pypardiso import spsolve
+#from pypardiso import spsolve
 from datetime import datetime
 
 class Simulation:
@@ -192,8 +192,8 @@ class Simulation:
         # Run Stokes flow
         flow = op.algorithms.StokesFlow(network=pn, phase=phase)
 
-        flow.settings['solver'] = 'spsolve'
-        flow.settings['spsolve'] = spsolve
+        #flow.settings['solver'] = 'spsolve'
+        #flow.settings['spsolve'] = spsolve
 
         flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
         flow.set_value_BC(pores=outlet_pores, values=0.0)
@@ -208,8 +208,8 @@ class Simulation:
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
 
-        tad.settings['solver'] = 'spsolve'
-        tad.settings['spsolve'] = spsolve
+        #tad.settings['solver'] = 'spsolve'
+        #tad.settings['spsolve'] = spsolve
 
         for solute_name, params in self.solute_classes.items():
             tad['pore.concentration'] = 0.0
@@ -259,14 +259,10 @@ class Simulation:
         
         n_steps = len(self.time_steps)
         fig, axes = plt.subplots(3, 2, figsize=(14, 12))
-        C_final_acids = self.concentrations['acids'][-1]
-        C_final_sugars = self.concentrations['sugars'][-1]
-        C_final_melanoidins = self.concentrations['melanoidins'][-1]
 
         # Plot 1: Concentration distribution at final step
-        axes[0, 0].hist(C_final_acids, bins=40, edgecolor='black', alpha=0.7, color='blue')
-        axes[0, 0].hist(C_final_sugars, bins=40, edgecolor='black', alpha=0.7, color='red')
-        axes[0, 0].hist(C_final_melanoidins, bins=40, edgecolor='black', alpha=0.7, color='green')
+        for solute in self.solute_classes.keys():
+            axes[0, 0].hist(self.concentrations[solute][-1], bins=40, edgecolor='black', alpha=0.7, label=solute)
         axes[0, 0].set_xlabel('Pore concentration (normalized)')
         axes[0, 0].set_ylabel('Frequency')
         axes[0, 0].set_title(f'Final Concentration Distribution (t={self.time_steps[-1]:.1f}s)')
@@ -293,9 +289,8 @@ class Simulation:
         axes[1, 0].grid(True, alpha=0.3)
         
         # Plot 4: Concentration profile (final)
-        axes[1, 1].scatter(coords[:, 2], C_final_acids, alpha=0.5, s=10, color='blue')
-        axes[1, 1].scatter(coords[:, 2], C_final_sugars, alpha=0.5, s=10, color='red')
-        axes[1, 1].scatter(coords[:, 2], C_final_melanoidins, alpha=0.5, s=10, color='green')
+        for solute in self.solute_classes.keys():
+            axes[0, 0].scatter(coords[:, 2], self.concentrations[solute][-1], alpha=0.5, s=10, label=solute)
         axes[1, 1].set_xlabel('Z-coordinate (voxels)')
         axes[1, 1].set_ylabel('Concentration (normalized)')
         axes[1, 1].set_title('Extraction Profile Along Flow (Final)')
