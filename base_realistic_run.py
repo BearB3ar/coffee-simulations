@@ -213,8 +213,11 @@ class Simulation:
                 t = (step + 1) * dt
 
                 # Calculate extraction source term R_source
-                phase['pore.A2'] = params['k'] * params['c_sat']
-                phase['pore.A1'] = -params['k']
+                A2, A1 = np.zeros(pn.Np), np.zeros(pn.Np)
+                A2 += params['k'] * params['c_sat']
+                A1 += -params['k']
+                phase['pore.A2'] = A2
+                phase['pore.A1'] = A1
                 phase['pore.X'] = phase[f'pore.{solute_name}_concentration']
                 """
                 R_source = np.zeros(pn.Np)
