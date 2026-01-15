@@ -1,11 +1,11 @@
+from cmath import phase
 import numpy as np
 import porespy as ps
 import openpnm as op
 import matplotlib.pyplot as plt
 from scipy.sparse.csgraph import connected_components
 import scipy.stats
-#from pypardiso import spsolve
-from datetime import datetime
+from pypardiso import spsolve
 
 class Simulation:
     def __init__(self, domain_shape=[100,100,75], porosity = 0.44, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
@@ -28,9 +28,9 @@ class Simulation:
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 0.05, 'concentration' : 400},
-                'sugars': {'k' : 0.02, 'concentration' : 200},
-                'melanoidins': {'k': 0.05, 'concentration' : 100}
+                'acids': {'k' : 0.05, 'concentration' : 400, 'c_sat' : 15.0},
+                'sugars': {'k' : 0.02, 'concentration' : 200, 'c_sat' : 25.0},
+                'melanoidins': {'k': 0.05, 'concentration' : 100, 'c_sat' : 10.0}
             }
         else:
             self.solute_classes = solute_classes
@@ -70,14 +70,6 @@ class Simulation:
 
         adj_matrix = pn.create_adjacency_matrix(weights=None, fmt='csr')
         n_components, labels = connected_components(csgraph=adj_matrix, directed=False, return_labels=True)
-        
-        """print(f"Connected components: {n_components}")
-        print(f"Component sizes: {np.bincount(labels)}")
-        
-        # Check for degree-1 and degree-2 nodes
-        degrees = np.array(adj_matrix.sum(axis=1)).flatten()
-        print(f"Pores with degree 1: {(degrees == 1).sum()}")
-        print(f"Pores with degree 2: {(degrees == 2).sum()}")"""
         
         return pn
     
@@ -167,9 +159,9 @@ class Simulation:
         
         phase.add_model(propname='pore.R_source',
                         model=op.models.physics.source_terms.linear,
-                        X=0.0,
-                        A1=0.0,
-                        A2='pore.R',
+                        X='pore.X',
+                        A1='pore.A1',
+                        A2='pore.A2',
                         regen_mode='deferred')
         
     def brew(self, brew_time, pour_rate, time_steps=1):
@@ -192,8 +184,8 @@ class Simulation:
         # Run Stokes flow
         flow = op.algorithms.StokesFlow(network=pn, phase=phase)
 
-        #flow.settings['solver'] = 'spsolve'
-        #flow.settings['spsolve'] = spsolve
+        flow.settings['solver'] = 'spsolve'
+        flow.settings['spsolve'] = spsolve
 
         flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
         flow.set_value_BC(pores=outlet_pores, values=0.0)
@@ -208,8 +200,8 @@ class Simulation:
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
 
-        #tad.settings['solver'] = 'spsolve'
-        #tad.settings['spsolve'] = spsolve
+        tad.settings['solver'] = 'spsolve'
+        tad.settings['spsolve'] = spsolve
 
         for solute_name, params in self.solute_classes.items():
             tad['pore.concentration'] = 0.0
@@ -221,14 +213,19 @@ class Simulation:
                 t = (step + 1) * dt
 
                 # Calculate extraction source term R_source
+                phase['pore.A2'] = params['k'] * params['c_sat']
+                phase['pore.A1'] = -params['k']
+                phase['pore.X'] = phase[f'pore.{solute_name}_concentration']
+                """
                 R_source = np.zeros(pn.Np)
                 available = phase[f'pore.{solute_name}_available']
                 extracted = params['k'] * available * dt
                 extracted = np.clip(extracted, 0, available)
                 phase[f'pore.{solute_name}_available'] -= extracted
                 R_source += extracted / dt
-                
+
                 phase['pore.R'] = R_source
+                """
                 phase.regenerate_models(propnames=['pore.R_source'])
                 #print(np.mean(phase['pore.R']))
                 tad.set_source(propname='pore.R_source', pores=pn.pores())
