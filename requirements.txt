@@ -1,0 +1,7 @@
+numpy 
+porespy
+openpnm
+matplotlib
+scipy
+pypardiso
+python=3.10.19
