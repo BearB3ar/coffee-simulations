@@ -200,24 +200,27 @@ class Simulation:
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
 
+        print(tad.settings.keys())
         tad.settings['solver'] = 'spsolve'
         tad.settings['spsolve'] = spsolve
+        tad.settings['verbose'] = True
 
         for solute_name, params in self.solute_classes.items():
             tad['pore.concentration'] = 0.0
             C_initial = tad['pore.concentration'].copy()
-            phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume']
+            initial_mass, phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume'], float(params['concentration']) * pn['pore.volume']
             phase[f'pore.{solute_name}_concentration'] = 0.0
 
             for step in range(time_steps):
                 t = (step + 1) * dt
 
                 # Calculate extraction source term R_source
-                A2, A1 = np.zeros(pn.Np), np.zeros(pn.Np)
-                A2 += params['k'] * params['c_sat']
-                A1 += -params['k']
-                phase['pore.A2'] = A2
-                phase['pore.A1'] = A1
+                #A2, A1 = np.zeros(pn.Np), np.zeros(pn.Np)
+                #A2 += params['k'] * params['c_sat']
+                #A1 += -params['k']
+                remaining_ratio = phase[f'pore.{solute_name}_available'] / initial_mass
+                phase['pore.A2'] = params['k'] * params['c_sat'] * remaining_ratio
+                phase['pore.A1'] = -params['k'] * remaining_ratio
                 phase['pore.X'] = phase[f'pore.{solute_name}_concentration']
                 """
                 R_source = np.zeros(pn.Np)
@@ -237,6 +240,7 @@ class Simulation:
 
                 phase['pore.concentration'] = tad['pore.concentration'].copy()
                 C_initial = tad['pore.concentration'].copy()
+                phase[f'pore.{solute_name}_available'] -= params['k'] * (params['c_sat'] - tad['pore.concentration']) * pn['pore.volume'] * dt
 
                 # Store results
                 if solute_name == 'acids':
