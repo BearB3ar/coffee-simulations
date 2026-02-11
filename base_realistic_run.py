@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from scipy.sparse.csgraph import connected_components
 import scipy.stats
 from pypardiso import spsolve
+from scipy.sparse import spdiags
 
 class Simulation:
     def __init__(self, domain_shape=[100,100,75], porosity = 0.44, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
@@ -200,10 +201,8 @@ class Simulation:
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
 
-        print(tad.settings.keys())
         tad.settings['solver'] = 'spsolve'
         tad.settings['spsolve'] = spsolve
-        tad.settings['verbose'] = True
 
         for solute_name, params in self.solute_classes.items():
             tad['pore.concentration'] = 0.0
@@ -214,39 +213,38 @@ class Simulation:
             for step in range(time_steps):
                 t = (step + 1) * dt
 
-                # Calculate extraction source term R_source
-                #A2, A1 = np.zeros(pn.Np), np.zeros(pn.Np)
-                #A2 += params['k'] * params['c_sat']
-                #A1 += -params['k']
+                # Calculate A1 and A2
+                placeholder = np.ones(pn.Np)
                 remaining_ratio = phase[f'pore.{solute_name}_available'] / initial_mass
-                phase['pore.A2'] = params['k'] * params['c_sat'] * remaining_ratio
-                phase['pore.A1'] = -params['k'] * remaining_ratio
-                phase['pore.X'] = phase[f'pore.{solute_name}_concentration']
-                """
-                R_source = np.zeros(pn.Np)
-                available = phase[f'pore.{solute_name}_available']
-                extracted = params['k'] * available * dt
-                extracted = np.clip(extracted, 0, available)
-                phase[f'pore.{solute_name}_available'] -= extracted
-                R_source += extracted / dt
+                A1 = -params['k'] * remaining_ratio * placeholder
+                A2 = params['k'] * params['c_sat'] * remaining_ratio * placeholder
+                
+                # Set up A and b matrices
+                tad._build_A()
+                tad._build_b()
+                M_source = spdiags(data=-A1, diags=0, m=pn.Np, n=pn.Np)
+                tad.A = tad.A + M_source
+                tad.b = tad.b + A2
 
-                phase['pore.R'] = R_source
-                """
-                phase.regenerate_models(propnames=['pore.R_source'])
-                #print(np.mean(phase['pore.R']))
-                tad.set_source(propname='pore.R_source', pores=pn.pores())
-                print(f"Solving for {solute_name}, time step {step+1}")
-                tad.run(x0=C_initial,tspan=[t-dt, t])
+                # Add time stepping accumulation term to b matrix
+                vol_term = pn['pore.volume'] / dt
+                accumulation_RHS = vol_term * C_initial
+                tad.b = tad.b + accumulation_RHS
 
-                phase['pore.concentration'] = tad['pore.concentration'].copy()
-                C_initial = tad['pore.concentration'].copy()
+                # Solve for C_new
+                C_new = spsolve(tad.A, tad.b)
+
+                # Update for next time step
+                tad['pore.concentration'] = C_new
+                C_initial = C_new.copy()
+                phase[f'pore.{solute_name}_concentration'] = C_new
                 phase[f'pore.{solute_name}_available'] -= params['k'] * (params['c_sat'] - tad['pore.concentration']) * pn['pore.volume'] * dt
-
-                # Store results
+                
+                # Store for data visualisation
                 if solute_name == 'acids':
                     self.time_steps.append(t)
-                self.outlet_concentrations[solute_name].append(phase['pore.concentration'][outlet_pores].mean())
-                self.concentrations[solute_name].append(phase['pore.concentration'].copy())
+                self.outlet_concentrations[solute_name].append(C_new[outlet_pores].mean())
+                self.concentrations[solute_name].append(C_new.copy())                    
 
     def mass_balance(self):
         mass_in_fluid = np.sum(self.phase['pore.concentration'] * self.pn['pore.volume'])
@@ -261,7 +259,7 @@ class Simulation:
         pn = self.pn
         coords = pn.coords
         
-        n_steps = len(self.time_steps)
+        #n_steps = len(self.time_steps)
         fig, axes = plt.subplots(3, 2, figsize=(14, 12))
 
         # Plot 1: Concentration distribution at final step
@@ -311,11 +309,11 @@ class Simulation:
         # Plot 6: Outlet mass with respect to position
         for solute in self.solute_classes.keys():
             mass = self.concentrations[solute][-1] * pn['pore.volume']
-            axes[0, 2].scatter(coords[:, 2], mass, alpha=0.5, s=10, label=solute)
-        axes[0, 2].set_xlabel('Z-coordinate (voxels)')
-        axes[0, 2].set_ylabel('Mass (kg)')
-        axes[0, 2].set_title('Mass Profile Along Flow (Final)')
-        axes[0, 2].grid(True, alpha=0.3)
+            axes[2, 1].scatter(coords[:, 2], mass, alpha=0.5, s=10, label=solute)
+        axes[2, 1].set_xlabel('Z-coordinate (voxels)')
+        axes[2, 1].set_ylabel('Mass (kg)')
+        axes[2, 1].set_title('Mass Profile Along Flow (Final)')
+        axes[2, 1].grid(True, alpha=0.3)
 
         plt.tight_layout()
         plt.show()
