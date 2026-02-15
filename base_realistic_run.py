@@ -1,10 +1,11 @@
-from cmath import phase
 import numpy as np
 import porespy as ps
 import openpnm as op
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 from scipy.sparse.csgraph import connected_components
 import scipy.stats
+from scipy.interpolate import griddata
 from pypardiso import spsolve
 from scipy.sparse import spdiags
 
@@ -254,6 +255,46 @@ class Simulation:
             remaining_mass = np.sum(self.phase[f'pore.{solute}_available'])
             total_mass_extracted += (initial_mass - remaining_mass)
         return mass_in_fluid, total_mass_extracted
+
+    def generate_brewing_animation(self, solute_name='acids'):
+        # 1. Get coordinates (assuming X and Z for a side-profile heatmap)
+        coords = self.pn['pore.coords']
+        x = coords[:, 0]
+        z = coords[:, 2]
+        
+        # 2. Define the grid where we want to "paint" the heatmap
+        xi = np.linspace(x.min(), x.max(), 100)
+        zi = np.linspace(z.min(), z.max(), 100)
+        xi, zi = np.meshgrid(xi, zi)
+
+        fig, ax = plt.subplots(figsize=(6, 8))
+        
+        # Initialize the plot with the first time step
+        c_data = self.concentrations[solute_name][0]
+        grid_c = griddata((x, z), c_data, (xi, zi), method='linear')
+        
+        im = ax.imshow(grid_c, extent=(x.min(), x.max(), z.min(), z.max()), 
+                    origin='lower', aspect='auto', cmap='magma')
+        plt.colorbar(im, label='Concentration [kg/m³]')
+        ax.set_title(f'Extraction Front: {solute_name}')
+        ax.set_xlabel('Width [m]')
+        ax.set_ylabel('Bed Depth [m]')
+
+        # 3. Update function for the animation
+        def update(frame):
+            c_data = self.concentrations[solute_name][frame]
+            # Interpolate scattered pore data to the regular grid
+            grid_c = griddata((x, z), c_data, (xi, zi), method='linear')
+            im.set_array(grid_c)
+            ax.set_title(f'Time Step: {frame} - {solute_name}')
+            return [im]
+
+        ani = FuncAnimation(fig, update, frames=len(self.concentrations[solute_name]), 
+                            interval=100, blit=True)
+        
+        # To save as MP4 (requires ffmpeg)
+        ani.save('coffee_extraction.gif', writer='pillow')
+        plt.show()
 
     def plot_results(self):
         pn = self.pn

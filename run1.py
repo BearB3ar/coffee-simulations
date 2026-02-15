@@ -45,6 +45,7 @@ sim.brew(
     pour_rate = 1,
     time_steps = 5
 )
+sim.generate_brewing_animation()
 sim.plot_results()
 sim.print_statistics()
 #print(sim.mass_balance())
