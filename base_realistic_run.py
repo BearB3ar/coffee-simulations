@@ -169,35 +169,38 @@ class Simulation:
     def brew(self, brew_time, pour_rate, time_steps=1):
         pn = self.pn
         phase = self.phase
-        coords = pn.coords
 
-        phase['pore.concentration'] = 0.0
-        
-        # Define boundary conditions based on V60 geometry
-        tol = 1e-6
-        inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
-        outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
-        
-        dt = brew_time / time_steps
-        self.dt = dt
+        def solve_flow(self, brew_time, pour_rate, time_steps):
+            coords = pn.coords
 
-        inlet_pressure = 1000 * (pour_rate / 50)  # Pa, scaled relative to 50 mL/s
+            phase['pore.concentration'] = 0.0
             
-        # Run Stokes flow
-        flow = op.algorithms.StokesFlow(network=pn, phase=phase)
+            # Define boundary conditions based on V60 geometry
+            tol = 1e-6
+            inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
+            outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-        flow.settings['solver'] = 'spsolve'
-        flow.settings['spsolve'] = spsolve
+            inlet_pressure = 1000 * (pour_rate / 50)  # Pa, scaled relative to 50 mL/s
+                
+            # Run Stokes flow
+            flow = op.algorithms.StokesFlow(network=pn, phase=phase)
 
-        flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
-        flow.set_value_BC(pores=outlet_pores, values=0.0)
-        flow.run()
-        self.pressures.append(flow['pore.pressure'].copy())
+            flow.settings['solver'] = 'spsolve'
+            flow.settings['spsolve'] = spsolve
 
-        self.pressures.append(flow['pore.pressure'].copy())
+            flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
+            flow.set_value_BC(pores=outlet_pores, values=0.0)
+            flow.run()
+            self.pressures.append(flow['pore.pressure'].copy())
 
-        phase['pore.pressure'] = flow['pore.pressure']
-        phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
+            self.pressures.append(flow['pore.pressure'].copy())
+
+            phase['pore.pressure'] = flow['pore.pressure']
+            phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
+        
+            return outlet_pores
+
+        outlet_pores = solve_flow(brew_time, pour_rate, time_steps)
 
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
@@ -205,14 +208,30 @@ class Simulation:
         tad.settings['solver'] = 'spsolve'
         tad.settings['spsolve'] = spsolve
 
+        dt = brew_time / time_steps
+        self.dt = dt
+
         for solute_name, params in self.solute_classes.items():
             tad['pore.concentration'] = 0.0
             C_initial = tad['pore.concentration'].copy()
             initial_mass, phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume'], float(params['concentration']) * pn['pore.volume']
             phase[f'pore.{solute_name}_concentration'] = 0.0
 
+            # Iterate through each time step
             for step in range(time_steps):
                 t = (step + 1) * dt
+
+                # Update geometry for swelling
+                shrink_factor = 0.99
+                pn['throat.diameter'] = np.maximum(pn['throat.diameter']*shrink_factor, 1e-6)
+                pn['pore.diameter'] = np.maximum(pn['pore.diameter']*shrink_factor, 1e-6)
+                
+                # Update geometry models
+                pn.regenerate_models()
+                phase.regenerate_models()
+
+                # Update flow model
+                solve_flow.run()
 
                 # Calculate A1 and A2
                 placeholder = np.ones(pn.Np)
