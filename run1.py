@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sim = base_realistic_run.Simulation(
-    domain_shape=[300,300,300],
+    domain_shape=[250,250,200],
     porosity = 0.46,
     temperature = 95,
     particle_size_dist = 'twin_lognormal'
@@ -11,11 +11,24 @@ sim = base_realistic_run.Simulation(
 
 sim.generate_coffee_bed()
 
-"""
-plt.imshow(sim.im[:, :, sim.shape[2]//2])
-plt.title('Packed spheres slice')
+fig, axes = plt.subplots(1, 3, figsize=(18,16))
+axes[0].imshow(sim.im[sim.shape[0]//2,:,:], cmap='magma')
+axes[0].set_title('XY Plane (Side)')
+axes[0].set_xlabel('Y')
+axes[0].set_ylabel('Z')
+
+axes[1].imshow(sim.im[:,sim.shape[1]//2,:], cmap='magma')
+axes[1].set_title('XY Plane (Side)')
+axes[1].set_xlabel('X')
+axes[1].set_ylabel('Z')
+
+axes[2].imshow(sim.im[:,:,sim.shape[2]//2], cmap='magma')
+axes[2].set_title('XY Plane (Top-down)')
+axes[2].set_xlabel('X')
+axes[2].set_ylabel('Y')
+
+plt.tight_layout()
 plt.show()
-"""
 
 sim.extract_network()
 sim.add_geometry_models()

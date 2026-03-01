@@ -25,12 +25,13 @@ class Simulation:
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 5e-4, 'concentration' : 400, 'c_sat' : 15.0},
+                'acids': {'k' : 5e-1, 'concentration' : 1000, 'c_sat' : 30.0},
             }
         else:
             self.solute_classes = solute_classes
 
     def generate_coffee_bed(self):
+        shape = self.shape
         if self.particle_size_dist == "twin_lognormal":
             x_axis = np.arange(0.5,100,0.5)
             target_peak = scipy.stats.lognorm(s=0.42, scale=(650e-6/2)/1e-4)
@@ -51,6 +52,12 @@ class Simulation:
             im_fines = ps.generators.polydisperse_spheres(shape=self.shape, r_min=0.5, porosity=self.porosity*0.1, dist=fines_dist)
 
             im = np.logical_or(im_main, im_fines).astype(int)
+
+        x,y,z = np.ogrid[0:shape[0], 0:shape[1], 0:shape[2]]
+        center_y, center_x = shape[1] // 2, shape[2] // 2
+        radius_at_z = -(z + 20) * np.tan(np.radians(30))
+        cone_mask = ((x - center_x)**2 + (y - center_y)**2) <= radius_at_z**2
+        im = im & cone_mask
         
         self.im = im
         return im
@@ -195,6 +202,16 @@ class Simulation:
         phase['pore.pressure'] = flow['pore.pressure']
         phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
 
+        Q_out = np.zeros(pn.Np)
+
+        for pore in outlet_pores:
+            # Find all throats connected to this specific outlet pore
+            connected_throats = pn.find_neighbor_throats(pores=pore)
+            
+            # Since water is incompressible and the network ends here, 
+            # the absolute sum of flow in these throats is exactly the flow leaving into the cup.
+            Q_out[pore] = np.sum(np.abs(phase['throat.ad_dif_conductance'][connected_throats]))
+
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
 
@@ -223,7 +240,8 @@ class Simulation:
 
                 # Add transient and extraction terms to all pores
                 M_source = spdiags(data=vol_term_LHS-A1, diags=0, m=pn.Np, n=pn.Np)
-                A_mat = tad.A + M_source
+                M_outflow = diags([Q_out], [0], format='csr')
+                A_mat = tad.A + M_source - M_outflow
                 b_vec = tad.b + A2 + (vol_term * C_initial)
 
                 # Enforce boundary conditions for A matrix
@@ -277,11 +295,11 @@ class Simulation:
     def generate_brewing_animation(self, solute_name='acids'):
         # 1. Get coordinates (assuming X and Z for a side-profile heatmap)
         coords = self.pn['pore.coords']
-        x = coords[:, 0]
+        y = coords[:, 1]
         z = coords[:, 2]
         
         # 2. Define the grid where we want to "paint" the heatmap
-        xi = np.linspace(x.min(), x.max(), 100)
+        xi = np.linspace(y.min(), y.max(), 100)
         zi = np.linspace(z.min(), z.max(), 100)
         xi, zi = np.meshgrid(xi, zi)
 
@@ -289,9 +307,9 @@ class Simulation:
         
         # Initialize the plot with the first time step
         c_data = self.concentrations[solute_name][0]
-        grid_c = griddata((x, z), c_data, (xi, zi), method='linear')
+        grid_c = griddata((y, z), c_data, (xi, zi), method='linear')
         
-        im = ax.imshow(grid_c, extent=(x.min(), x.max(), z.min(), z.max()), 
+        im = ax.imshow(grid_c, extent=(y.min(), y.max(), z.min(), z.max()), 
                         origin='lower', aspect='auto', cmap='magma')
         plt.colorbar(im, label='Concentration [kg/m³]')
         ax.set_title(f'Extraction Front: {solute_name}')
@@ -302,7 +320,7 @@ class Simulation:
         def update(frame):
             c_data = self.concentrations[solute_name][frame]
             # Interpolate scattered pore data to the regular grid
-            grid_c = griddata((x, z), c_data, (xi, zi), method='linear')
+            grid_c = griddata((y, z), c_data, (xi, zi), method='linear')
             im.set_array(grid_c)
             ax.set_title(f'Time Step: {frame} - {solute_name}')
             return [im]
