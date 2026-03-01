@@ -3,7 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sim = base_realistic_run.Simulation(
-    porosity = 0.42,
+    domain_shape=[300,300,300],
+    porosity = 0.46,
     temperature = 95,
     particle_size_dist = 'twin_lognormal'
 )
@@ -41,9 +42,9 @@ print(f"  Zero/negative conductances: {(h <= 0).sum()}")
 """
 
 sim.brew(
-    brew_time = 150,
-    pour_rate = 1,
-    time_steps = 5
+    brew_time = 120,
+    pour_rate = 2,
+    time_steps = 120
 )
 sim.generate_brewing_animation()
 sim.plot_results()
