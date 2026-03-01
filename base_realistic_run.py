@@ -22,9 +22,6 @@ class Simulation:
             'acids': [],
         }
         self.pressures = []
-        self.outlet_concentrations = {
-            'acids': [],
-        }
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
@@ -201,12 +198,6 @@ class Simulation:
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
 
-        # Has no effect since tad is solved manually
-        """tad.settings['solver'] = 'spsolve'
-        tad.settings['spsolve'] = pypardiso_spsolve
-        tad.set_value_BC(pores=inlet_pores, values=0.0, mode='overwrite')
-        tad.set_value_BC(pores=outlet_pores, values=0.0, mode='overwrite')"""
-
         for solute_name, params in self.solute_classes.items():
             tad['pore.concentration'] = 0.0
             C_initial = tad['pore.concentration'].copy()
@@ -272,8 +263,8 @@ class Simulation:
                 # Store for data visualisation
                 if solute_name == 'acids':
                     self.time_steps.append(t)
-                self.outlet_concentrations[solute_name].append(C_new[outlet_pores].mean())
-                self.concentrations[solute_name].append(C_new.copy())      
+                self.concentrations[solute_name].append(C_new.copy())
+                self.total_extracted += np.mean(np.minimum(mass_to_extract, phase[f'pore.{solute_name}_available']))      
 
     def mass_balance(self):
         mass_in_fluid = np.sum(self.phase['pore.concentration'] * self.pn['pore.volume'])
@@ -443,8 +434,8 @@ class Simulation:
         if self.concentrations:
             for solute in self.solute_classes.keys():
                 print(f" {solute} statistics:")
-                print(f"  Final mean concentration: {self.concentrations[solute][-1].mean():.3f}")
-                print(f"  Final max concentration: {self.concentrations[solute][-1].max():.3f}")
-                print(f"  Mass in fluid: {np.sum(self.concentrations[solute][-1] * pn['pore.volume']):.15f}")
+                print("Total mass to be extracted: ", np.mean(self.solute_classes[solute]['concentration'] * pn['pore.volume']))
+                print(f"Extracted mass: {self.total_extracted}")
+                print(f"Extracted concentration: {self.total_extracted / 240}")
                 print()
         print(f"{'='*60}\n")
