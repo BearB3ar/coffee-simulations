@@ -228,13 +228,12 @@ class Simulation:
 
                 # Enforce boundary conditions for A matrix
                 A_lil = A_mat.tolil() # Converts matrix from CSR to LIL format for faster row operations
-                boundary_pores = np.concatenate((inlet_pores, outlet_pores)) 
-                A_lil[boundary_pores, :] = 0.0 # Zeros row for boundary pores
-                A_lil[boundary_pores, boundary_pores] = 1.0 # Puts 1s on the diagonal
+                A_lil[inlet_pores, :] = 0.0 # Zeros row for boundary pores
+                A_lil[inlet_pores, inlet_pores] = 1.0 # Puts 1s on the diagonal
                 A_mat = A_lil.tocsr() # Converts back to CSR format
 
                 # Enforce boundary conditions for b vector
-                b_vec[boundary_pores] = 0.0
+                b_vec[inlet_pores] = 0.0
                 
                 # Error handling for 0 on the diagonals
                 diagonals = A_mat.diagonal() 
@@ -358,13 +357,13 @@ class Simulation:
         axes[2, 0].grid(True, alpha=0.3)
 
         # Plot 5: Outlet concentration over time 
-        for solute in self.solute_classes.keys():
+        """for solute in self.solute_classes.keys():
             concs = self.outlet_concentrations[solute]
             axes[0,1].plot(self.time_steps, concs, alpha=0.7)
         axes[0,1].set_xlabel('Time')
         axes[0,1].set_ylabel('Outlet concentration')
         axes[0,1].set_title('Outlet concentration against time ')
-        axes[0,1].grid(True, alpha=0.3)
+        axes[0,1].grid(True, alpha=0.3)"""
 
         # Plot 6: Concentration against time for different parts of CV
         z_coords = pn['pore.coords'][:,2]
@@ -383,6 +382,7 @@ class Simulation:
         axes[2, 1].set_xlabel('Time')
         axes[2, 1].set_ylabel('Concentrations')
         axes[2, 1].set_title('Concentrations of top, middle and bottom of CV against time')
+        axes[2, 1].legend()
         axes[2, 1].grid(True, alpha=0.3)
 
         plt.tight_layout()
