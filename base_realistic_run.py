@@ -54,13 +54,36 @@ class Simulation:
             im = np.logical_or(im_main, im_fines).astype(int)
 
         x,y,z = np.ogrid[0:shape[0], 0:shape[1], 0:shape[2]]
-        center_y, center_x = shape[1] // 2, shape[2] // 2
+        center_y, center_x = shape[0] // 2, shape[1] // 2
         radius_at_z = -(z + 20) * np.tan(np.radians(30))
         cone_mask = ((x - center_x)**2 + (y - center_y)**2) <= radius_at_z**2
         im = im & cone_mask
         
         self.im = im
         return im
+    
+    def plot_coffee_bed(self):
+        im = self.im
+        shape = self.shape
+
+        fig, axes = plt.subplots(1, 3, figsize=(18,16))
+        axes[0].imshow(im[shape[0]//2,:,:], cmap='magma')
+        axes[0].set_title('XY Plane (Side)')
+        axes[0].set_xlabel('Y')
+        axes[0].set_ylabel('Z')
+
+        axes[1].imshow(im[:,shape[1]//2,:], cmap='magma')
+        axes[1].set_title('XY Plane (Side)')
+        axes[1].set_xlabel('X')
+        axes[1].set_ylabel('Z')
+
+        axes[2].imshow(im[:,:,shape[2]//2], cmap='magma')
+        axes[2].set_title('XY Plane (Top-down)')
+        axes[2].set_xlabel('X')
+        axes[2].set_ylabel('Y')
+
+        plt.tight_layout()
+        plt.show(block=False)
     
     def extract_network(self):
         snow_dict = ps.networks.snow2(self.im, voxel_size=1e-5, sigma=0.3, r_max=5) # 10 microns per voxel
@@ -404,7 +427,7 @@ class Simulation:
         axes[2, 1].grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
     
     def print_statistics(self):
         pn = self.pn
@@ -443,6 +466,13 @@ class Simulation:
         print(f"  Avg throat diameter: {pn['throat.diameter'].mean():.7f} voxels")
         print(f"  Pore diameter range: {pn['pore.diameter'].min():.7f} - {pn['pore.diameter'].max():.7f}")
         print(f"  Throat diameter range: {pn['throat.diameter'].min():.7f} - {pn['throat.diameter'].max():.7f}")
+        print(f"\nConductance properties:")
+        print(f" Hydraulic conductance: {phase['throat.hydraulic_conductance'].min():.3e} - {phase['throat.hydraulic_conductance'].max():.3e}")
+        print(f" Hydraulic conductance ratio: {phase['throat.hydraulic_conductance'].max()/phase['throat.hydraulic_conductance'].min():.0e}")
+        print(f" Zero/negative hydraulic conductances: {(phase['throat.hydraulic_conductance']<=0).sum()}")
+        print(f" Diffusive conductance: {phase['throat.diffusive_conductance'].min():.3e} - {phase['throat.diffusive_conductance'].max():.3e}")
+        print(f" Diffusive conductance ratio: {phase['throat.diffusive_conductance'].max()/phase['throat.diffusive_conductance'].min():.0e}")
+        print(f" Zero/negative diffusive conductances: {(phase['throat.diffusive_conductance']<=0).sum()}")
         print(f"\nPhase Properties at {self.temperature}°C:")
         print(f"  Viscosity: {self.phase['pore.viscosity'][0]:.3e} Pa·s")
         print(f"  Diffusivity: {self.phase['pore.diffusivity'][0]:.3e} m²/s")
