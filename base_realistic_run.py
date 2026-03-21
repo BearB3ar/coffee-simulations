@@ -21,11 +21,15 @@ class Simulation:
         self.concentrations = {
             'acids': [],
         }
+        self.temperature_variation = {
+            "unclipped": [],
+            "final": []
+        }
         self.pressures = []
         self.total_extracted = 0.0
         if solute_classes is None:
             self.solute_classes = {
-                'acids': {'k' : 5e-1, 'concentration' : 1000, 'c_sat' : 30.0},
+                'acids': {'k' : 10e-3, 'concentration' : 400, 'c_sat' : 150.0},
             }
         else:
             self.solute_classes = solute_classes
@@ -57,6 +61,7 @@ class Simulation:
         center_y, center_x = shape[0] // 2, shape[1] // 2
         radius_at_z = -(z + 20) * np.tan(np.radians(30))
         cone_mask = ((x - center_x)**2 + (y - center_y)**2) <= radius_at_z**2
+        self.cone_mask = cone_mask # Needed for porosity calculation at the end
         im = im & cone_mask
         
         self.im = im
@@ -83,7 +88,7 @@ class Simulation:
         axes[2].set_ylabel('Y')
 
         plt.tight_layout()
-        plt.show(block=False)
+        plt.show()
     
     def extract_network(self):
         snow_dict = ps.networks.snow2(self.im, voxel_size=1e-5, sigma=0.3, r_max=5) # 10 microns per voxel
@@ -141,6 +146,9 @@ class Simulation:
     def phase(self):
         pn = self.pn
         phase = op.phase.Water(network=pn)
+
+        phase['pore.temperature'] = self.temperature
+        phase['throat.temperature'] = self.temperature
         
         mu_ref = 0.95e-3  # Pa·s at 20°C
         mu = mu_ref * np.exp(-0.03 * (self.temperature - 20))
@@ -156,12 +164,10 @@ class Simulation:
         
         phase['pore.diffusivity'] = D
         phase['throat.diffusivity'] = D
-        
-        # Add density variation with temperature
-        rho_ref = 1000  # kg/m³ at 20°C
-        alpha = 0.0002  # volumetric expansion coefficient
-        rho = rho_ref / (1 + alpha * (self.temperature - 20))
-        phase['pore.density'] = rho
+
+        thermal_conductivity = -8.354e-6 * (self.temperature**2) + 6.53e-3*self.temperature - 0.5981
+        phase['pore.thermal_conductivity'] = thermal_conductivity
+        phase['throat.thermal_conductivity'] = thermal_conductivity
         
         self.phase = phase
         return phase
@@ -186,67 +192,191 @@ class Simulation:
                        throat_diffusive_conductance='throat.diffusive_conductance',
                        pore_pressure='pore.pressure',
                        s_scheme='powerlaw')
+
+        phase.add_model(propname='throat.thermal_conductance',
+                        model=op.models.physics.thermal_conductance.generic_thermal,
+                        pore_conductivity='pore.thermal_conductivity',
+                        throat_conductivity='throat.thermal_conductivity',
+                        size_factors='throat.diffusive_size_factors')
         
-        phase.add_model(propname='pore.R_source',
-                        model=op.models.physics.source_terms.linear,
-                        X='pore.X',
-                        A1='pore.A1',
-                        A2='pore.A2',
-                        regen_mode='deferred')
-        
-    def brew(self, brew_time, pour_rate, time_steps=1):
+    def brew(self, brew_time, pour_rate, time_steps=1, shrink_factor=0.99):
+        self.brew_time = brew_time
+        self.pour_rate = pour_rate
         pn = self.pn
         phase = self.phase
-        coords = pn.coords
 
-        phase['pore.concentration'] = 0.0
-        
-        # Define boundary conditions based on V60 geometry
-        tol = 1e-6
-        inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
-        outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
-        
+        # Coffee bean parameters
+        rho_s = 765 # Density [kg/m3]
+        cp_s = 2000 # Heat capacity [J/kgK]
+
+        # Water parameters
+        rho_w = 965
+        cp_w = 4190
+
         dt = brew_time / time_steps
         self.dt = dt
+        def solve_flow(self, pour_rate):
+            coords = pn.coords
 
-        inlet_pressure = 1000 * (pour_rate / 50)  # Pa, scaled relative to 50 mL/s
+            phase['pore.concentration'] = 0.0
             
-        # Run Stokes flow
-        flow = op.algorithms.StokesFlow(network=pn, phase=phase)
+            # Define boundary conditions based on V60 geometry
+            tol = 1e-6
+            inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
+            outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-        flow.settings['solver'] = 'spsolve'
-        flow.settings['spsolve'] = pypardiso_spsolve
+            inlet_pressure = 1000 * (pour_rate / 200) + 500  # Pa, scaled relative to 50 mL/s
+            # Run Stokes flow
+            flow = op.algorithms.StokesFlow(network=pn, phase=phase)
 
-        flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
-        flow.set_value_BC(pores=outlet_pores, values=0.0)
-        flow.run()
-        self.pressures.append(flow['pore.pressure'].copy())
+            flow.settings['solver'] = 'spsolve'
+            flow.settings['spsolve'] = pypardiso_spsolve
 
-        phase['pore.pressure'] = flow['pore.pressure']
-        phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
+            flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
+            flow.set_value_BC(pores=outlet_pores, values=0.0)
+            flow.run()
+            self.pressures.append(flow['pore.pressure'].copy())
 
-        Q_out = np.zeros(pn.Np)
+            phase['pore.pressure'] = flow['pore.pressure']
+            phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
 
-        for pore in outlet_pores:
-            # Find all throats connected to this specific outlet pore
-            connected_throats = pn.find_neighbor_throats(pores=pore)
-            
-            # Since water is incompressible and the network ends here, 
-            # the absolute sum of flow in these throats is exactly the flow leaving into the cup.
-            Q_out[pore] = np.sum(np.abs(phase['throat.ad_dif_conductance'][connected_throats]))
+            return inlet_pores, outlet_pores
 
         # Implement transient advection diffusion solver
         tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
+        tad_thermo = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
+        tad_thermo.settings['conductance'] = 'throat.thermal_conductance'
 
         for solute_name, params in self.solute_classes.items():
+            swelling_flag, temperature_flag = False, True
+
+            # Initial setup for how much solute is available for extraction and how much has been extracted
             tad['pore.concentration'] = 0.0
             C_initial = tad['pore.concentration'].copy()
             initial_mass, phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume'], float(params['concentration']) * pn['pore.volume']
+            self.initial_mass = initial_mass
             phase[f'pore.{solute_name}_concentration'] = 0.0
+
+            initial_pore_diameter = pn['pore.diameter'].copy()
+            initial_throat_diameter = pn['throat.diameter'].copy()
+            T_prev_step = 1e99
+
+            inlet_pores, outlet_pores = solve_flow(self, pour_rate)
 
             for step in range(time_steps):
                 t = (step + 1) * dt
-                
+
+                # Swelling feature (disabled)
+                if swelling_flag:
+                    # Calculate swelling -> shrinkage of pores and throats
+                    pn['throat.diameter'] = np.maximum(pn['throat.diameter']*shrink_factor, initial_throat_diameter * 0.985)
+                    pn['pore.diameter'] = np.maximum(pn['pore.diameter']*shrink_factor, initial_pore_diameter * 0.985)
+
+                    # Update geometry models
+                    pn.regenerate_models()
+                    phase.regenerate_models()
+
+                    inlet_pores, outlet_pores = solve_flow(self, pour_rate)
+                    if pn['throat.diameter'].all() <= 1e-6 and pn['pore.diameter'].all() <= 1e-5:
+                        swelling_flag = False
+
+                # Recalculation of viscosity and diffusivity
+                if temperature_flag:
+                    T_pore = phase['pore.temperature']
+                    T_throat = phase['throat.temperature']
+
+                    mu_ref = 0.95e-3  # Pa·s at 20°C
+                    
+                    phase['pore.viscosity'] = mu_ref * np.exp(-0.03 * (T_pore - 20))
+                    phase['throat.viscosity'] = mu_ref * np.exp(-0.03 * (T_throat - 20))
+                    
+                    # Temperature-dependent diffusivity (m²/s)
+                    # Stokes-Einstein: D ~ T / mu
+                    # Solutes in water scale roughly as D ~ 5e-10 * (T/293) / (mu/0.001)
+                    D_ref = 5e-10  # m²/s at 20°C for typical coffee solutes
+                    
+                    phase['pore.diffusivity'] = D_ref * (T_pore + 273.15) / 293.15 * (1.002e-3 / phase['pore.viscosity'])
+                    phase['throat.diffusivity'] = D_ref * (T_throat + 273.15) / 293.15 * (1.002e-3 / phase['throat.viscosity'])
+
+                    phase['pore.thermal_conductivity'] = -8.354e-6 * (T_pore**2) + (6.53e-3)*T_pore - 0.5981
+                    phase['throat.thermal_conductivity'] = -8.354e-6 * (T_throat**2) + (6.53e-3)*T_throat - 0.5981
+
+                    phase.regenerate_models(propnames="throat.hydraulic_conductance")
+                    phase.regenerate_models(propnames="throat.diffusive_conductance")
+                    phase.regenerate_models(propnames="throat.ad_dif_conductance")
+                    phase.regenerate_models(propnames="throat.thermal_conductance")
+
+                    inlet_pores, outlet_pores = solve_flow(self, pour_rate)
+                    if np.array_equal(T_pore,T_prev_step):
+                        temperature_flag = False
+                    else:
+                        T_prev_step = phase['pore.temperature'].copy()
+
+                # Solve temperature variation
+                tad_thermo._build_A()
+                tad_thermo._build_b()
+
+                # Calculate flow outflow, to be used in solute outflow
+                Q_out = np.zeros(pn.Np)
+                for pore in outlet_pores:
+                    # Find all throats connected to this specific outlet pore
+                    connected_throats = pn.find_neighbor_throats(pores=pore)
+                    
+                    # Since water is incompressible and the network ends here, 
+                    # the absolute sum of flow in these throats is exactly the flow leaving into the cup.
+                    Q_out[pore] = np.sum(np.abs(phase['throat.ad_dif_conductance'][connected_throats]))
+
+                # 1. Calculate Thermal Accumulation (Density * Heat Capacity * Volume / dt)
+                # We use the combined heat capacity of the water-filled pore and the solid grain
+                # Porosity (phi) is handled via pore.volume (fluid) and solid_volume
+                vol_term_thermal = (rho_w * cp_w * pn['pore.volume'] + rho_s * cp_s * (pn['pore.volume'] * ((1-self.porosity)/self.porosity))) / dt
+                thermal_drain = Q_out * rho_w * cp_w
+
+                # Add accumulation to LHS and RHS
+                A_mat_T = tad_thermo.A + diags([vol_term_thermal], [0], format='csr') + diags([thermal_drain], [0], format='csr')
+                b_vec_T = tad_thermo.b + (vol_term_thermal * phase['pore.temperature'])
+
+                # Apply Boundary Conditions
+                A_lil_T = A_mat_T.tolil()
+                A_lil_T[inlet_pores, :] = 0.0
+                A_lil_T[inlet_pores, inlet_pores] = 1.0
+                A_mat_T = A_lil_T.tocsr()
+
+                b_vec_T[inlet_pores] = 95 # 95°C Inlet
+
+                # 4. Solve for Temperature
+                T_new = pypardiso_spsolve(A_mat_T, b_vec_T)
+                if np.isnan(T_new).any():
+                    T_new = scipy_spsolve(A_mat_T, b_vec_T)
+
+                self.temperature_variation['unclipped'].append(np.mean(T_new))
+                T_new = np.clip(T_new, 293.15, 368.15) # Keep between 20C and 95C
+                self.temperature_variation['final'].append(np.mean(T_new))
+
+                phase['pore.temperature'] = T_new
+
+                # Diagnostic for residence time during brewing phase
+                """P = phase['pore.pressure']
+                g = phase['throat.hydraulic_conductance']
+                conns = pn['throat.conns']
+                manual_flow = g * np.abs(P[conns[:, 0]] - P[conns[:, 1]])
+
+                # A more robust way to find total flow Q:
+                # Find all throats connecting the top half of the bed to the bottom half
+                z_coords = pn['pore.coords'][:, 2]
+                mid_z = np.median(z_coords)
+
+                top_pores = np.where(z_coords > mid_z)[0]
+                bot_pores = np.where(z_coords <= mid_z)[0]
+
+                # Throats that cross the middle plane
+                cross_throats = pn.find_connected_pores(top_pores, bot_pores)
+                Q_total = np.sum(manual_flow[cross_throats])
+
+                V_total = np.sum(pn['pore.volume']) + np.sum(pn['throat.volume'])
+
+                print(f"Corrected Residence Time: {V_total / Q_total} seconds at time step {step}")"""
+
                 # Build original version of A and b
                 tad._build_A()
                 tad._build_b()
@@ -397,14 +527,14 @@ class Simulation:
         axes[2, 0].legend()
         axes[2, 0].grid(True, alpha=0.3)
 
-        # Plot 5: Outlet concentration over time 
-        """for solute in self.solute_classes.keys():
-            concs = self.outlet_concentrations[solute]
-            axes[0,1].plot(self.time_steps, concs, alpha=0.7)
+        # Plot 5: Mean temperature variation over time
+        for temp in self.temperature_variation.keys():
+            axes[0,1].plot(self.time_steps, self.temperature_variation[temp], 'o-', alpha=0.7, label=temp)
         axes[0,1].set_xlabel('Time')
-        axes[0,1].set_ylabel('Outlet concentration')
-        axes[0,1].set_title('Outlet concentration against time ')
-        axes[0,1].grid(True, alpha=0.3)"""
+        axes[0,1].set_ylabel('Mean temperature')
+        axes[0,1].set_title('Mean temperature variation over time')
+        axes[0,1].legend()
+        axes[0,1].grid(True, alpha=0.3)
 
         # Plot 6: Concentration against time for different parts of CV
         z_coords = pn['pore.coords'][:,2]
@@ -427,7 +557,7 @@ class Simulation:
         axes[2, 1].grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.show(block=False)
+        plt.show()
     
     def print_statistics(self):
         pn = self.pn
@@ -455,13 +585,14 @@ class Simulation:
         print(f"\n{'='*60}")
         print(f"COFFEE BED SIMULATION STATISTICS")
         print(f"{'='*60}")
-        print(f"Temperature: {self.temperature}°C")
+        print(f"Initial temperature: {self.temperature}°C")
         print(f"Target porosity: {self.porosity:.1%}")
-        print(f"Actual porosity: {self.im.sum() / self.im.size:.1%}")
+        print(f"Actual porosity: {self.im[self.cone_mask].sum() / self.cone_mask.sum():.1%}")
         print(f"Domain shape: {self.shape}")
         print(f"\nNetwork Properties:")
         print(f"  Number of pores: {pn.Np}")
         print(f"  Number of throats: {pn.Nt}")
+        print(f"  Pore volume: {pn['pore.volume']}")
         print(f"  Avg pore diameter: {pn['pore.diameter'].mean():.7f} voxels")
         print(f"  Avg throat diameter: {pn['throat.diameter'].mean():.7f} voxels")
         print(f"  Pore diameter range: {pn['pore.diameter'].min():.7f} - {pn['pore.diameter'].max():.7f}")
@@ -482,8 +613,9 @@ class Simulation:
         if self.concentrations:
             for solute in self.solute_classes.keys():
                 print(f" {solute} statistics:")
-                print("Total mass to be extracted: ", np.mean(self.solute_classes[solute]['concentration'] * pn['pore.volume']))
+                print("Total mass to be extracted: ", np.mean(self.initial_mass))
                 print(f"Extracted mass: {self.total_extracted}")
-                print(f"Extracted concentration: {self.total_extracted / 240}")
+                print(f"EY: {self.total_extracted/np.mean(self.initial_mass):%}")
+                print(f"TDS: {(self.total_extracted / (self.brew_time*self.pour_rate)):%}")
                 print()
         print(f"{'='*60}\n")
