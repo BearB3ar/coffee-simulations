@@ -1,6 +1,4 @@
 import base_realistic_run 
-import numpy as np
-import matplotlib.pyplot as plt
 
 sim = base_realistic_run.Simulation(
     # Full V60 size is [1000,1000,820]
@@ -11,7 +9,7 @@ sim = base_realistic_run.Simulation(
 )
 
 sim.generate_coffee_bed()
-sim.plot_coffee_bed()
+#sim.plot_coffee_bed()
 
 sim.extract_network()
 sim.add_geometry_models()
@@ -21,7 +19,8 @@ sim.add_physics_models()
 sim.brew(
     brew_time = 120,
     pour_rate = 2,
-    time_steps = 120
+    time_steps = 120,
+    shrink_factor = 1 # Choose 1 to neglect swelling effects
 )
 sim.generate_brewing_animation()
 sim.plot_results()
