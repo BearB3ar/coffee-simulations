@@ -3,12 +3,13 @@ import base_realistic_run
 sim = base_realistic_run.Simulation(
     # Full V60 size is [1000,1000,820]
     domain_shape=[250,250,205],
-    porosity = 0.46,
+    porosity = 0.42,
     temperature = 95,
     particle_size_dist = 'twin_lognormal'
 )
 
 sim.generate_coffee_bed()
+sim.wall_effect(wall_porosity_boost=0.5, decay_width=30)
 #sim.plot_coffee_bed()
 
 sim.extract_network()

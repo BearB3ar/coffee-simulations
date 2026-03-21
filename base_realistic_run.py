@@ -10,6 +10,7 @@ from scipy.sparse.linalg import spsolve as scipy_spsolve
 from pypardiso import spsolve as pypardiso_spsolve
 from scipy.sparse import spdiags
 from scipy.sparse import diags
+import scipy.ndimage as spim
 
 class Simulation:
     def __init__(self, domain_shape=[300,300,300], porosity = 0.46, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
@@ -65,7 +66,38 @@ class Simulation:
         im = im & cone_mask
         
         self.im = im
-        return im
+    
+    def wall_effect(self, wall_porosity_boost=0.2, decay_width=10):
+        im = self.im
+        cone_mask = self.cone_mask
+
+        # Solid grounds in V60 cone
+        grounds = (im == 0) & cone_mask
+
+        # Distance measurer from cone_mask boundary inwards
+        dt = spim.distance_transform_edt(cone_mask)
+
+        # Find spheres using spim logic rather than searching by voxels and identify their centroids
+        labels, n_spheres = spim.label(grounds)
+        centroids = spim.center_of_mass(grounds, labels, range(1, n_spheres+1))
+
+        new_im = im.copy()
+
+        for i, center in enumerate(centroids):
+            # z,y,x is order specified by centroids
+            z, y, x = int(center[0]), int(center[1]), int(center[2])
+            
+            # Find the distance to cone_mask boundary
+            dist = dt[z,y,x]
+
+            # Dynamic probability of removal based on distance from cone_mask
+            p_remove = wall_porosity_boost * np.exp(-dist / decay_width)
+
+            # Remove if randomly generated probability falls within probability of removal
+            if np.random.random() < p_remove:
+                new_im[labels == (i+1)] = 1
+
+        self.im = new_im
     
     def plot_coffee_bed(self):
         im = self.im
@@ -248,7 +280,7 @@ class Simulation:
         tad_thermo.settings['conductance'] = 'throat.thermal_conductance'
 
         for solute_name, params in self.solute_classes.items():
-            swelling_flag, temperature_flag = False, True
+            swelling_flag, temperature_flag = False, False
 
             # Initial setup for how much solute is available for extraction and how much has been extracted
             tad['pore.concentration'] = 0.0
