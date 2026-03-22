@@ -123,7 +123,7 @@ class Simulation:
         plt.show()
     
     def extract_network(self):
-        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-5, sigma=0.3, r_max=5) # 10 microns per voxel
+        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4, sigma=0.3, r_max=5) # 100 microns per voxel
         pn = op.io.network_from_porespy(snow_dict.network)
         pn['pore.diameter'] = pn['pore.inscribed_diameter']
         pn['throat.diameter'] = pn['throat.inscribed_diameter']
@@ -245,6 +245,16 @@ class Simulation:
         rho_w = 965
         cp_w = 4190
 
+        # Maximum amount of fines in each throat
+        max_clog_capacity = pn['throat.volume'] * rho_s * (1-0.8)
+
+        V_total_cell = (pn['pore.diameter']**3) # Simplification of the voxel box
+        V_solid = np.maximum(V_total_cell - pn['pore.volume'],0)
+        phase['pore.fines_mass'] = (V_solid / V_solid.sum()) * 0.005
+
+        # Logs the fines that have been displaced and their location
+        phase['throat.clogged_mass'] = np.zeros(pn.Nt)
+
         dt = brew_time / time_steps
         self.dt = dt
         def solve_flow(self, pour_rate):
@@ -270,6 +280,7 @@ class Simulation:
             self.pressures.append(flow['pore.pressure'].copy())
 
             phase['pore.pressure'] = flow['pore.pressure']
+            phase['throat.hydraulic_flow'] = flow.rate(throats=pn.Ts, mode='throat')
             phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
 
             return inlet_pores, outlet_pores
@@ -279,8 +290,9 @@ class Simulation:
         tad_thermo = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
         tad_thermo.settings['conductance'] = 'throat.thermal_conductance'
 
+
         for solute_name, params in self.solute_classes.items():
-            swelling_flag, temperature_flag = False, False
+            swelling_flag, temperature_flag = False, True
 
             # Initial setup for how much solute is available for extraction and how much has been extracted
             tad['pore.concentration'] = 0.0
@@ -356,13 +368,15 @@ class Simulation:
                     
                     # Since water is incompressible and the network ends here, 
                     # the absolute sum of flow in these throats is exactly the flow leaving into the cup.
-                    Q_out[pore] = np.sum(np.abs(phase['throat.ad_dif_conductance'][connected_throats]))
+                    Q_out[pore] = np.sum(np.abs(phase['throat.hydraulic_flow'][connected_throats]))
+
+                self.actual_porosity = self.im[self.cone_mask].sum() / self.cone_mask.sum()
 
                 # 1. Calculate Thermal Accumulation (Density * Heat Capacity * Volume / dt)
                 # We use the combined heat capacity of the water-filled pore and the solid grain
-                # Porosity (phi) is handled via pore.volume (fluid) and solid_volume
-                vol_term_thermal = (rho_w * cp_w * pn['pore.volume'] + rho_s * cp_s * (pn['pore.volume'] * ((1-self.porosity)/self.porosity))) / dt
-                thermal_drain = Q_out * rho_w * cp_w
+                vol_term_thermal = (rho_w * cp_w * pn['pore.volume'] + rho_s * cp_s * (pn['pore.volume'] * ((1-self.actual_porosity)/self.actual_porosity))) / dt
+                thermal_drain = np.zeros(pn.Np)
+                thermal_drain[outlet_pores] = Q_out[outlet_pores] * rho_w * cp_w
 
                 # Add accumulation to LHS and RHS
                 A_mat_T = tad_thermo.A + diags([vol_term_thermal], [0], format='csr') + diags([thermal_drain], [0], format='csr')
@@ -467,6 +481,53 @@ class Simulation:
                     self.time_steps.append(t)
                 self.concentrations[solute_name].append(C_new.copy())
                 self.total_extracted += np.mean(np.minimum(mass_to_extract, phase[f'pore.{solute_name}_available']))      
+
+                # Velocity through each throat
+                u_throats = np.abs(phase['throat.hydraulic_flow']) / pn['throat.cross_sectional_area']
+
+                # 1. Identify which pore is "Upstream" for every throat
+                # pn['throat.conns'] is (Nt, 2). 
+                # flow > 0 means water goes from col 0 to col 1.
+                flow = phase['throat.hydraulic_flow']
+                upstream_pores = np.where(flow > 0, pn['throat.conns'][:, 0], pn['throat.conns'][:, 1])
+
+                entrainment_rate = 0.001 # Rate at which fines are dislodged once u > critical_velocity
+                critical_velocity = 0.1 # Speed above which fines are dislodged
+
+                # 2. Calculate entrainment for every throat (as a mass per second)
+                # mobile_rate is (Nt,)
+                mobile_rate = np.where(
+                    u_throats > critical_velocity, 
+                    entrainment_rate, 
+                    0
+                )
+
+                # 3. Calculate actual mass to move this step (kg)
+                # We pull from the 'fines_mass' of the upstream_pores
+                mass_to_pull = phase['pore.fines_mass'][upstream_pores] * mobile_rate * dt
+
+                # 4. Update the Pores (Mass Conservation)
+                # Since multiple throats might pull from the same pore, use np.add.at for safety
+                np.add.at(phase['pore.fines_mass'], upstream_pores, -mass_to_pull)
+                phase['pore.fines_mass'] = np.maximum(phase['pore.fines_mass'], 0)
+
+                # Identify downstream pores
+                downstream_pores = np.where(flow > 0, pn['throat.conns'][:, 1], pn['throat.conns'][:, 0])
+
+                # Finds small throats
+                is_small = pn['throat.diameter'] < 100e-6
+
+                # Add to clogs
+                phase['throat.clogged_mass'] += mass_to_pull * is_small
+
+                # Add the rest to the next pore's "available" fines
+                np.add.at(phase['pore.fines_mass'], downstream_pores, mass_to_pull * (~is_small))
+
+                # Conductance decreases with clogging ratio in accordance with power law
+                clogging_ratio = phase['throat.clogged_mass'] / max_clog_capacity
+                phase['throat.hydraulic_conductance'] *= (1-clogging_ratio)**3
+
+                phase.regenerate_models(propnames='throat.hydraulic_conductance')
 
     def mass_balance(self):
         mass_in_fluid = np.sum(self.phase['pore.concentration'] * self.pn['pore.volume'])
@@ -619,12 +680,12 @@ class Simulation:
         print(f"{'='*60}")
         print(f"Initial temperature: {self.temperature}°C")
         print(f"Target porosity: {self.porosity:.1%}")
-        print(f"Actual porosity: {self.im[self.cone_mask].sum() / self.cone_mask.sum():.1%}")
+        print(f"Actual porosity: {self.actual_porosity:.1%}")
         print(f"Domain shape: {self.shape}")
         print(f"\nNetwork Properties:")
         print(f"  Number of pores: {pn.Np}")
         print(f"  Number of throats: {pn.Nt}")
-        print(f"  Pore volume: {pn['pore.volume']}")
+        #print(f"  Pore volume: {pn['pore.volume']}")
         print(f"  Avg pore diameter: {pn['pore.diameter'].mean():.7f} voxels")
         print(f"  Avg throat diameter: {pn['throat.diameter'].mean():.7f} voxels")
         print(f"  Pore diameter range: {pn['pore.diameter'].min():.7f} - {pn['pore.diameter'].max():.7f}")
