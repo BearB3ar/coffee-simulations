@@ -8,8 +8,11 @@ sim = base_realistic_run.Simulation(
     particle_size_dist = 'twin_lognormal'
 )
 
+wall_porosity_boost = 0.44 + 1.74/(250/(650e-6/1e-4) +1.14)**2
+print(wall_porosity_boost)
+
 sim.generate_coffee_bed()
-sim.wall_effect(wall_porosity_boost=0.5, decay_width=30)
+sim.wall_effect(wall_porosity_boost=wall_porosity_boost, decay_width=60)
 #sim.plot_coffee_bed()
 
 sim.extract_network()
