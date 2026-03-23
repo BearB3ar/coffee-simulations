@@ -1,15 +1,15 @@
 import base_realistic_run 
 
 sim = base_realistic_run.Simulation(
-    # Full V60 size is [1000,1000,820]
+    # Full V60 size is approximately [500,500,410]
     domain_shape=[250,250,205],
     porosity = 0.44,
     temperature = 95,
     particle_size_dist = 'twin_lognormal'
 )
 
-wall_porosity_boost = 0.44 + 1.74/(250/(650e-6/1e-4) +1.14)**2
-print(wall_porosity_boost)
+# Based on the tube-particle diameter ratio, this is the expected porosity increase over packing unaffected by wall effect
+wall_porosity_boost = 1.74/(250/(650e-6/1e-4) +1.14)**2
 
 sim.generate_coffee_bed()
 sim.wall_effect(wall_porosity_boost=wall_porosity_boost, decay_width=60)
@@ -29,4 +29,3 @@ sim.brew(
 sim.generate_brewing_animation()
 sim.plot_results()
 sim.print_statistics()
-#print(sim.mass_balance())
