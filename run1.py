@@ -2,7 +2,7 @@ import base_realistic_run
 
 sim = base_realistic_run.Simulation(
     # Full V60 size is approximately [500,500,410]
-    domain_shape=[250,250,205],
+    domain_shape=[265,265,205],
     porosity = 0.44,
     temperature = 95,
     particle_size_dist = 'twin_lognormal'

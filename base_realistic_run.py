@@ -15,6 +15,17 @@ import scipy.ndimage as spim
 """Assume SI units unless otherwise specified"""
 
 class Simulation:
+    viscosity_ref_table = {20:0.0010016, # Units of C: Pa s
+                           25:0.0008900,
+                           30:0.0007972,
+                           40:0.0006527,
+                           50:0.0005465,
+                           60:0.0004660,
+                           70:0.0004035,
+                           80:0.0003540,
+                           90:0.0003142,
+                           100:0.0002816}  
+
     def __init__(self, domain_shape=[300,300,300], porosity = 0.46, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
         self.shape = domain_shape # Cuboidal control volume, trimming to cone shape done later (units of voxels)
         self.porosity = porosity # Target porosity, actual porosity depends on porespy image generation + wall effect 
@@ -121,7 +132,7 @@ class Simulation:
         axes[1].set_xlabel('X')
         axes[1].set_ylabel('Z')
 
-        axes[2].imshow(im[:,:,shape[2]//2], cmap='magma')
+        axes[2].imshow(im[:,:,shape[2]-1], cmap='magma')
         axes[2].set_title('XY Plane (Top-down)')
         axes[2].set_xlabel('X')
         axes[2].set_ylabel('Y')
@@ -199,10 +210,13 @@ class Simulation:
         phase['pore.temperature'] = self.temperature
         phase['throat.temperature'] = self.temperature
         
-        # TODO: Verify mu_ref and equation below
-        mu_ref = 0.95e-3  # Pa·s at 20°C
-        mu = mu_ref * np.exp(-0.03 * (self.temperature - 20))
-        
+        # Interpolate between temperatures for approximate dynamic viscosity
+        if self.temperature not in self.viscosity_ref_table.keys():
+            lower_bound_temp = max(i for i in self.viscosity_ref_table.keys() if i < self.temperature)
+            upper_bound_temp = min(i for i in self.viscosity_ref_table.keys() if i > self.temperature)
+            mu = ((self.temperature - lower_bound_temp) / (upper_bound_temp - lower_bound_temp)) * (self.viscosity_ref_table[upper_bound_temp] - self.viscosity_ref_table[lower_bound_temp]) + self.viscosity_ref_table[lower_bound_temp]
+        else:
+            mu = self.viscosity_ref_table[self.temperature]
         phase['pore.viscosity'] = mu
         phase['throat.viscosity'] = mu
         
@@ -261,7 +275,7 @@ class Simulation:
         rho_s = 765 # Density [kg/m3]
         cp_s = 2000 # Heat capacity [J/kgK]
 
-        # Water parameters
+        # Water parameters approximation (varies with temperature)
         rho_w = 965
         cp_w = 4190
 
@@ -361,10 +375,15 @@ class Simulation:
                     T_pore = phase['pore.temperature']
                     T_throat = phase['throat.temperature']
 
-                    # TODO: Same as above, review viscosity equation
-                    mu_ref = 0.95e-3  # Pa·s at 20°C
-                    phase['pore.viscosity'] = mu_ref * np.exp(-0.03 * (T_pore - 20))
-                    phase['throat.viscosity'] = mu_ref * np.exp(-0.03 * (T_throat - 20))
+                    # Interpolate between temperatures for approximate dynamic viscosity
+                    if self.temperature not in self.viscosity_ref_table.keys():
+                        lower_bound_temp = max(i for i in self.viscosity_ref_table.keys() if i < self.temperature)
+                        upper_bound_temp = min(i for i in self.viscosity_ref_table.keys() if i > self.temperature)
+                        mu = ((self.temperature - lower_bound_temp) / (upper_bound_temp - lower_bound_temp)) * (self.viscosity_ref_table[upper_bound_temp] - self.viscosity_ref_table[lower_bound_temp]) + self.viscosity_ref_table[lower_bound_temp]
+                    else:
+                        mu = self.viscosity_ref_table[self.temperature]
+                    phase['pore.viscosity'] = mu
+                    phase['throat.viscosity'] = mu
                     
                     # TODO: Same as above, review diffusivity equation
                     # Stokes-Einstein: D ~ T / mu
@@ -712,8 +731,8 @@ class Simulation:
         print(f"\nNetwork Properties:")
         print(f"  Number of pores: {pn.Np}")
         print(f"  Number of throats: {pn.Nt}")
-        print(f"  Avg pore diameter: {pn['pore.diameter'].mean():.7f} voxels")
-        print(f"  Avg throat diameter: {pn['throat.diameter'].mean():.7f} voxels")
+        print(f"  Avg pore diameter: {pn['pore.diameter'].mean():.7f}m")
+        print(f"  Avg throat diameter: {pn['throat.diameter'].mean():.7f}m")
         print(f"  Pore diameter range: {pn['pore.diameter'].min():.7f} - {pn['pore.diameter'].max():.7f}")
         print(f"  Throat diameter range: {pn['throat.diameter'].min():.7f} - {pn['throat.diameter'].max():.7f}")
         print(f"\nConductance properties:")
