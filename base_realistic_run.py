@@ -49,6 +49,13 @@ class Simulation:
         else:
             self.solute_classes = solute_classes
 
+    def _water_viscosity_from_temp_c(self, temp_c):
+        # Linear interpolation over tabulated viscosity-vs-temperature data
+        temps = np.array(sorted(self.viscosity_ref_table.keys()), dtype=float)
+        mus = np.array([self.viscosity_ref_table[t] for t in temps], dtype=float)
+        temp_arr = np.asarray(temp_c, dtype=float)
+        return np.interp(temp_arr, temps, mus, left=mus[0], right=mus[-1])
+
     def generate_coffee_bed(self):
         shape = self.shape
         # Approximates the grinds distribution as 2 separate lognormal curves
@@ -207,24 +214,21 @@ class Simulation:
         pn = self.pn
         phase = op.phase.Water(network=pn)
 
+        # Keep phase temperatures in degC consistently across the simulation.
         phase['pore.temperature'] = self.temperature
         phase['throat.temperature'] = self.temperature
-        
-        # Interpolate between temperatures for approximate dynamic viscosity
-        if self.temperature not in self.viscosity_ref_table.keys():
-            lower_bound_temp = max(i for i in self.viscosity_ref_table.keys() if i < self.temperature)
-            upper_bound_temp = min(i for i in self.viscosity_ref_table.keys() if i > self.temperature)
-            mu = ((self.temperature - lower_bound_temp) / (upper_bound_temp - lower_bound_temp)) * (self.viscosity_ref_table[upper_bound_temp] - self.viscosity_ref_table[lower_bound_temp]) + self.viscosity_ref_table[lower_bound_temp]
-        else:
-            mu = self.viscosity_ref_table[self.temperature]
+
+        mu = self._water_viscosity_from_temp_c(self.temperature)
         phase['pore.viscosity'] = mu
         phase['throat.viscosity'] = mu
         
-        # According to Stokes-Einstein: D ~ T / mu
-        # Solutes in water scale roughly as D ~ 5e-10 * (T/293) / (mu/0.001)
-        # TODO: Verify D_ref and the expression above
+        # According to Stokes-Einstein: D scales as absolute temperature / viscosity.
+        # Temperatures are stored in degC, so convert to Kelvin only for this scaling.
         D_ref = 5e-10  # m²/s at 20°C for typical coffee solutes
-        D = D_ref * (self.temperature + 273.15) / 293.15 * (1.002e-3 / mu)
+        T_ref_k = 293.15
+        mu_ref = 1.002e-3
+        T_k = self.temperature + 273.15
+        D = D_ref * (T_k / T_ref_k) * (mu_ref / mu)
         
         phase['pore.diffusivity'] = D
         phase['throat.diffusivity'] = D
@@ -373,25 +377,19 @@ class Simulation:
                 # Recalculation of viscosity and diffusivity
                 if temperature_flag:
                     T_pore = phase['pore.temperature']
-                    T_throat = phase['throat.temperature']
+                    # Keep pore/throat temperatures in degC; evaluate throat temperature from adjacent pores.
+                    T_throat = np.mean(T_pore[pn['throat.conns']], axis=1)
+                    phase['throat.temperature'] = T_throat
 
-                    # Interpolate between temperatures for approximate dynamic viscosity
-                    if self.temperature not in self.viscosity_ref_table.keys():
-                        lower_bound_temp = max(i for i in self.viscosity_ref_table.keys() if i < self.temperature)
-                        upper_bound_temp = min(i for i in self.viscosity_ref_table.keys() if i > self.temperature)
-                        mu = ((self.temperature - lower_bound_temp) / (upper_bound_temp - lower_bound_temp)) * (self.viscosity_ref_table[upper_bound_temp] - self.viscosity_ref_table[lower_bound_temp]) + self.viscosity_ref_table[lower_bound_temp]
-                    else:
-                        mu = self.viscosity_ref_table[self.temperature]
-                    phase['pore.viscosity'] = mu
-                    phase['throat.viscosity'] = mu
-                    
-                    # TODO: Same as above, review diffusivity equation
-                    # Stokes-Einstein: D ~ T / mu
-                    # Solutes in water scale roughly as D ~ 5e-10 * (T/293) / (mu/0.001)
+                    phase['pore.viscosity'] = self._water_viscosity_from_temp_c(T_pore)
+                    phase['throat.viscosity'] = self._water_viscosity_from_temp_c(T_throat)
+
+                    # Stokes-Einstein scaling with absolute temperature in Kelvin
                     D_ref = 5e-10  # m²/s at 20°C for typical coffee solutes
-                    
-                    phase['pore.diffusivity'] = D_ref * (T_pore + 273.15) / 293.15 * (1.002e-3 / phase['pore.viscosity'])
-                    phase['throat.diffusivity'] = D_ref * (T_throat + 273.15) / 293.15 * (1.002e-3 / phase['throat.viscosity'])
+                    T_ref_k = 293.15
+                    mu_ref = 1.002e-3
+                    phase['pore.diffusivity'] = D_ref * ((T_pore + 273.15) / T_ref_k) * (mu_ref / phase['pore.viscosity'])
+                    phase['throat.diffusivity'] = D_ref * ((T_throat + 273.15) / T_ref_k) * (mu_ref / phase['throat.viscosity'])
 
                     phase['pore.thermal_conductivity'] = -9.30e-6 * (T_pore**2) + 7.19e-3*T_pore - 0.711
                     phase['throat.thermal_conductivity'] = -9.30e-6 * (T_throat**2) + 7.19e-3*T_throat - 0.711
@@ -455,13 +453,11 @@ class Simulation:
 
                 # Save mean temperature at each time step
                 self.temperature_variation['unclipped'].append(np.mean(T_new))
-                T_new = np.clip(T_new, 293.15, 368.15) # Keep between 20C and 95C
+                T_new = np.clip(T_new, 20.0, 95.0) # Keep between 20C and 95C
                 self.temperature_variation['final'].append(np.mean(T_new))
 
                 # Update phase
                 phase['pore.temperature'] = T_new
-                # TODO: Figure out if this is a required step
-                #phase['throat.temperature'] = T_new
 
                 # Diagnostic for residence time during brewing phase (useful for swelling)
                 """P = phase['pore.pressure']
