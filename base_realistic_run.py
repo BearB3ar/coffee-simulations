@@ -36,15 +36,19 @@ class Simulation:
             'acids': [],
         }
         self.temperature_variation = { # Stores mean temperature of the bed at every time step, before and after clipping
-            "unclipped": [],
             "final": []
+        }
+        # Stores full pore temperature fields for debugging the T solver.
+        # Each entry is an array of shape (Np,) in the same pore ordering as `self.pn`.
+        self.temperature_fields = {
+            "clipped": []
         }
         self.pressures = [] # Stores pressures of the entire bed at every time step
         self.total_extracted = 0.0 # Cumulative measure for how much solute leaves outlet_pores
         if solute_classes is None:
             self.solute_classes = {
                 # TODO: Tune amount of coffee present initially and other parameters
-                'acids': {'k' : 10e-3, 'concentration' : 400, 'c_sat' : 150.0},
+                'acids': {'k' : 10e-3, 'concentration' : 12e8, 'c_sat' : 150.0}, # Target initial mass is 6.47e-2
             }
         else:
             self.solute_classes = solute_classes
@@ -233,7 +237,11 @@ class Simulation:
         phase['pore.diffusivity'] = D
         phase['throat.diffusivity'] = D
 
-        thermal_conductivity = -9.30e-6 * (self.temperature**2) + 7.19e-3*self.temperature - 0.711
+        # Thermal conductivity correlation uses absolute temperature (Kelvin).
+        # Using degC can make the correlation negative in the 20-95C range,
+        # which destabilizes the thermal T solver.
+        T_k = self.temperature + 273.15
+        thermal_conductivity = -9.30e-6 * (T_k**2) + 7.19e-3*T_k - 0.711
         phase['pore.thermal_conductivity'] = thermal_conductivity
         phase['throat.thermal_conductivity'] = thermal_conductivity
         
@@ -298,6 +306,12 @@ class Simulation:
         dt = brew_time / time_steps
         self.dt = dt
 
+        # Pre-compute a "bottom" pore subset for thermal debugging.
+        # Use a quantile so it's robust to changes in network size.
+        """z_coords_for_debug = pn['pore.coords'][:, 2]
+        bottom_cutoff = float(np.quantile(z_coords_for_debug, 0.2))
+        bottom_pores_debug_mask = z_coords_for_debug <= bottom_cutoff"""
+
         # Recallable function to solve flow characteristics (pressure, flow rate)
         def solve_flow(self, pour_rate):
             coords = pn.coords
@@ -331,14 +345,14 @@ class Simulation:
             return inlet_pores, outlet_pores
 
         # Implement transient advection solvers for diffusion and thermal effects
-        tad = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
-        tad_thermo = op.algorithms.TransientAdvectionDiffusion(network=pn, phase=phase)
-        tad_thermo.settings['conductance'] = 'throat.thermal_conductance'
+        ad = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
+        ad_thermo = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
+        ad_thermo.settings['conductance'] = 'throat.thermal_conductance'
 
         for solute_name, params in self.solute_classes.items():
             # Initial setup for how much solute is available for extraction and how much has been extracted
-            tad['pore.concentration'] = 0.0 # Note tad 'local'
-            C_initial = tad['pore.concentration'].copy()
+            ad['pore.concentration'] = 0.0 # Note ad 'local'
+            ad_thermo['pore.temperature'] = 20.0 # Assume no preheating
             initial_mass, phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume'], float(params['concentration']) * pn['pore.volume']
             self.initial_mass = initial_mass
 
@@ -391,8 +405,11 @@ class Simulation:
                     phase['pore.diffusivity'] = D_ref * ((T_pore + 273.15) / T_ref_k) * (mu_ref / phase['pore.viscosity'])
                     phase['throat.diffusivity'] = D_ref * ((T_throat + 273.15) / T_ref_k) * (mu_ref / phase['throat.viscosity'])
 
-                    phase['pore.thermal_conductivity'] = -9.30e-6 * (T_pore**2) + 7.19e-3*T_pore - 0.711
-                    phase['throat.thermal_conductivity'] = -9.30e-6 * (T_throat**2) + 7.19e-3*T_throat - 0.711
+                    # Thermal conductivity correlation uses absolute temperature (Kelvin).
+                    T_pore_k = T_pore + 273.15
+                    T_throat_k = T_throat + 273.15
+                    phase['pore.thermal_conductivity'] = -9.30e-6 * (T_pore_k**2) + 7.19e-3*T_pore_k - 0.711
+                    phase['throat.thermal_conductivity'] = -9.30e-6 * (T_throat_k**2) + 7.19e-3*T_throat_k - 0.711
 
                     # Update phase models (each one is specifically called to prevent updating hidden models)
                     phase.regenerate_models(propnames="throat.hydraulic_conductance")
@@ -411,8 +428,8 @@ class Simulation:
 
                 # Solve temperature variation
                 # Start by building A and b matrices in Ax=b
-                tad_thermo._build_A()
-                tad_thermo._build_b()
+                ad_thermo._build_A()
+                ad_thermo._build_b()
 
                 # Calculate flow outflow, to be used in solute and thermal outflow
                 Q_out = np.zeros(pn.Np)
@@ -433,11 +450,35 @@ class Simulation:
                 
                 # Calculate thermal drain due to outflow
                 thermal_drain = np.zeros(pn.Np)
-                thermal_drain[outlet_pores] = Q_out[outlet_pores] * rho_w * cp_w
+                # Outflow sink for the advected "temperature" variable should be scaled
+                # like the concentration outflow (i.e. proportional to volumetric flow).
+                # Multiplying by rho*cp makes this term inconsistent with ad_thermo's units.
+                thermal_drain[outlet_pores] = Q_out[outlet_pores]
 
-                # Add accumulation (and decrease) to LHS and RHS
-                A_mat_T = tad_thermo.A + diags([vol_term_thermal], [0], format='csr') + diags([thermal_drain], [0], format='csr')
-                b_vec_T = tad_thermo.b + (vol_term_thermal * phase['pore.temperature'])
+                """# Debug: thermal_drain magnitude vs solver diagonal
+                if step in {0, time_steps // 2, time_steps - 1}:
+                    diag_ad = ad_thermo.A.diagonal()
+                    if len(outlet_pores) > 0:
+                        td_out = thermal_drain[outlet_pores]
+                        diag_out = diag_ad[outlet_pores]
+                        guard = np.where(diag_out != 0, diag_out, np.nan)
+                        ratio = td_out / guard
+                        print(
+                            f"[thermo drain debug] step={step+1}/{time_steps} "
+                            f"outlet_pores={len(outlet_pores)} "
+                            f"thermal_drain_out_min={float(np.nanmin(td_out)):.3e} "
+                            f"thermal_drain_out_max={float(np.nanmax(td_out)):.3e} "
+                            f"diag_out_median={float(np.nanmedian(diag_out)):.3e} "
+                            f"ratio_td_to_diag_median={float(np.nanmedian(ratio)):.3g} "
+                            f"ratio_min={float(np.nanmin(ratio)):.3g} ratio_max={float(np.nanmax(ratio)):.3g}"
+                        )"""
+
+                # IMPORTANT: `AdvectionDiffusion` already includes the transient/accumulation
+                # term internally for the field `ad_thermo['pore.temperature']`.
+                # Adding `vol_term_thermal` again double-counts accumulation and can over-cool parts
+                # of the domain. Keep only the explicit outlet drain as an extra sink term.
+                A_mat_T = ad_thermo.A + diags([thermal_drain], [0], format='csr')
+                b_vec_T = ad_thermo.b
 
                 # Apply BC
                 A_lil_T = A_mat_T.tolil() # Convert to LIL format for faster row operations
@@ -451,13 +492,42 @@ class Simulation:
                 if np.isnan(T_new).any():
                     T_new = scipy_spsolve(A_mat_T, b_vec_T)
 
+                # Debug: count how many pore temperatures are outside the clamp band.
+                T_min_c, T_max_c = 20.0, 95.0
+                """if step in {0, time_steps // 2, time_steps - 1}:
+                    n_below = int(np.count_nonzero(T_new < T_min_c))
+                    n_above = int(np.count_nonzero(T_new > T_max_c))
+                    n_clipped = n_below + n_above
+                    if n_clipped > 0:
+                        print(
+                            f"[T solver clip] step={step+1}/{time_steps} "
+                            f"mean_unclipped={np.mean(T_new):.2f}C "
+                            f"min_unclipped={np.min(T_new):.2f}C max_unclipped={np.max(T_new):.2f}C "
+                            f"clip_low={n_below} clip_high={n_above} of {pn.Np}"
+                        )"""
+
                 # Save mean temperature at each time step
-                self.temperature_variation['unclipped'].append(np.mean(T_new))
-                T_new = np.clip(T_new, 20.0, 95.0) # Keep between 20C and 95C
-                self.temperature_variation['final'].append(np.mean(T_new))
+                #self.temperature_variation['unclipped'].append(np.mean(T_new))
+                #self.temperature_fields['unclipped'].append(T_new.copy())
+
+                T_clipped = np.clip(T_new, T_min_c, T_max_c) # Keep between 20C and 95C
+                self.temperature_variation['final'].append(np.mean(T_clipped))
+                self.temperature_fields['clipped'].append(T_clipped.copy())
+
+                # Debug: report temperatures in bottom region (unclipped vs clipped)
+                """if step in {0, time_steps // 2, time_steps - 1}:
+                    bottom_uncl = T_new[bottom_pores_debug_mask]
+                    bottom_cl = T_clipped[bottom_pores_debug_mask]
+                    print(
+                        f"[thermo bottom debug] step={step+1}/{time_steps} "
+                        f"mean_all_uncl={np.mean(T_new):.2f}C mean_all_cl={np.mean(T_clipped):.2f}C "
+                        f"mean_bottom_uncl={np.mean(bottom_uncl):.2f}C min_bottom_uncl={np.min(bottom_uncl):.2f}C "
+                        f"mean_bottom_cl={np.mean(bottom_cl):.2f}C min_bottom_cl={np.min(bottom_cl):.2f}C"
+                    )"""
 
                 # Update phase
-                phase['pore.temperature'] = T_new
+                ad_thermo['pore.temperature'] = T_clipped
+                phase['pore.temperature'] = T_clipped
 
                 # Diagnostic for residence time during brewing phase (useful for swelling)
                 """P = phase['pore.pressure']
@@ -482,8 +552,8 @@ class Simulation:
                 print(f"Corrected Residence Time: {V_total / Q_total} seconds at time step {step}")"""
 
                 # Build original version of A and b for solute flow
-                tad._build_A()
-                tad._build_b()
+                ad._build_A()
+                ad._build_b()
 
                 # Calculate extraction equation
                 # Calculate A1 and A2 (Y = A1X + A2)
@@ -492,14 +562,16 @@ class Simulation:
                 A1 = -params['k'] * remaining_ratio * placeholder * pn['pore.volume']
                 A2 = params['k'] * params['c_sat'] * remaining_ratio * placeholder * pn['pore.volume']
 
-                # Calculate volume term - scales concentration change per unit time and volume, almost like an inertial term
-                vol_term = pn['pore.volume'] / dt
-
-                # Add source terms to pores and outflow to outlet_pores in A matrix, volume term to b vector
-                M_source = spdiags(data=vol_term-A1, diags=0, m=pn.Np, n=pn.Np)
+                # IMPORTANT: `AdvectionDiffusion` already includes the transient/accumulation
+                # term for `ad['pore.concentration']`, so we should not add `vol_term` again.
+                # Only add the reaction/extraction contribution (from A1/A2) here.
+                # `A1` is negative in your linearization, so `-A1` is the diagonal sink/source weight.
+                M_source = spdiags(data=-A1, diags=0, m=pn.Np, n=pn.Np)
                 M_outflow = diags([Q_out], [0], format='csr')
-                A_mat = tad.A + M_source - M_outflow
-                b_vec = tad.b + A2 + (vol_term * C_initial)
+                A_mat = ad.A + M_source - M_outflow
+                # `ad.b` already contains the transient term contributions using the current
+                # `ad['pore.concentration']` (previous time step).
+                b_vec = ad.b + A2
 
                 # Enforce boundary conditions for A matrix
                 A_lil = A_mat.tolil() # Converts matrix from CSR to LIL format for faster row operations
@@ -525,8 +597,7 @@ class Simulation:
                     C_new = scipy_spsolve(A_mat, b_vec)
 
                 # Update for next time step
-                tad['pore.concentration'] = C_new.copy() # Concentration in each pore
-                C_initial = C_new.copy() # Explicit separate tracker for pore concentration in case something messes up in the tad solver 
+                ad['pore.concentration'] = C_new.copy() # Concentration in each pore
 
                 # Update remaining solute and ensure extraction does not exceed available
                 driving_force = np.maximum(0, params['c_sat'] - C_new)
@@ -537,7 +608,7 @@ class Simulation:
                 if solute_name == 'acids':
                     self.time_steps.append(t)
                 self.concentrations[solute_name].append(C_new.copy())
-                self.total_extracted += np.mean(np.minimum(mass_to_extract, phase[f'pore.{solute_name}_available']))      
+                self.total_extracted += np.mean(np.maximum(mass_to_extract, 0))      
 
                 # Velocity through each throat
                 u_throats = np.abs(phase['throat.hydraulic_flow']) / pn['throat.cross_sectional_area']
@@ -625,6 +696,75 @@ class Simulation:
         
         # To save as MP4 (requires ffmpeg)
         ani.save('coffee_extraction.gif', writer='pillow')
+
+    def generate_temperature_animation(self, save_path='temperature_debug.gif', interval=80):
+        """
+        Side-by-side animation of pore temperature heatmaps:
+        - unclipped: raw T_new from the thermal linear solve
+        - clipped: after applying the [20C, 95C] clamp
+        """
+        if not self.temperature_fields.get('clipped'):
+            raise RuntimeError(
+                "No temperature fields stored. Run `brew()` first (or ensure the updated code path executes)."
+            )
+
+        coords = self.pn['pore.coords']
+        y = coords[:, 1]
+        z = coords[:, 2]
+
+        # Define the grid where we want to interpolate (same approach as concentration animation).
+        xi = np.linspace(y.min(), y.max(), 100)
+        zi = np.linspace(z.min(), z.max(), 100)
+        xi, zi = np.meshgrid(xi, zi)
+
+        n_frames = len(self.temperature_fields['clipped'])
+        if n_frames == 0:
+            raise RuntimeError("Temperature animation has no frames to render.")
+
+        # Set color limits for easier visual comparison.
+        cl_vals = np.array([np.min(arr) for arr in self.temperature_fields['clipped'][:n_frames]])
+        cl_vals2 = np.array([np.max(arr) for arr in self.temperature_fields['clipped'][:n_frames]])
+
+        cl_vmin = float(np.min(cl_vals))
+        cl_vmax = float(np.max(cl_vals2))
+
+        # Initial frames
+        T_cl0 = self.temperature_fields['clipped'][0]
+
+        grid_cl0 = griddata((y, z), T_cl0, (xi, zi), method='linear')
+
+        fig, axes = plt.subplots(1, 1, figsize=(12, 7))
+        ax_cl = axes[0]
+
+        im_cl = ax_cl.imshow(
+            grid_cl0, extent=(y.min(), y.max(), z.min(), z.max()),
+            origin='lower', aspect='auto', cmap='magma', vmin=cl_vmin, vmax=cl_vmax
+        )
+
+        plt.colorbar(im_cl, ax=ax_cl, label='Temperature [C] (clipped)')
+
+        ax_cl.set_title(f'Clipped mean: {np.mean(T_cl0):.2f}C')
+        ax_cl.set_xlabel('Width [m]')
+        ax_cl.set_ylabel('Bed Depth [m]')
+
+        def update(frame):
+            T_cl = self.temperature_fields['clipped'][frame]
+
+            grid_cl = griddata((y, z), T_cl, (xi, zi), method='linear')
+
+            im_cl.set_array(grid_cl)
+            ax_cl.set_title(f'Clipped mean: {np.mean(T_cl):.2f}C')
+            return [im_cl]
+
+        ani = FuncAnimation(
+            fig,
+            update,
+            frames=n_frames,
+            interval=interval,
+            blit=True
+        )
+
+        ani.save(save_path, writer='pillow')
 
     def plot_results(self):
         pn = self.pn
@@ -747,9 +887,9 @@ class Simulation:
         if self.concentrations:
             for solute in self.solute_classes.keys():
                 print(f" {solute} statistics:")
-                print("Total mass to be extracted: ", np.mean(self.initial_mass))
+                print("Total mass to be extracted: ", np.sum(self.initial_mass))
                 print(f"Extracted mass: {self.total_extracted}")
-                print(f"EY: {self.total_extracted/np.mean(self.initial_mass):%}")
+                print(f"EY: {self.total_extracted/np.sum(self.initial_mass):%}")
                 print(f"TDS: {(self.total_extracted / (self.brew_time*self.pour_rate)):%}")
                 print()
         print(f"{'='*60}\n")

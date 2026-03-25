@@ -27,5 +27,6 @@ sim.brew(
     shrink_factor = 1 # Choose 1 to neglect swelling effects
 )
 sim.generate_brewing_animation()
+sim.generate_temperature_animation()
 sim.plot_results()
 sim.print_statistics()
