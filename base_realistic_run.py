@@ -11,6 +11,7 @@ from pypardiso import spsolve as pypardiso_spsolve
 from scipy.sparse import spdiags
 from scipy.sparse import diags
 import scipy.ndimage as spim
+import math
 
 """Assume SI units unless otherwise specified"""
 
@@ -36,19 +37,24 @@ class Simulation:
             'acids': [],
         }
         self.temperature_variation = { # Stores mean temperature of the bed at every time step, before and after clipping
-            "final": []
+            "final": [],
+            "unclipped": []
         }
         # Stores full pore temperature fields for debugging the T solver.
         # Each entry is an array of shape (Np,) in the same pore ordering as `self.pn`.
         self.temperature_fields = {
-            "clipped": []
+            "clipped": [],
+            "unclipped": []
         }
-        self.pressures = [] # Stores pressures of the entire bed at every time step
+        self.pressures = []  # Filled in brew(): one snapshot per step after fines + Stokes (see generate_pressure_animation)
         self.total_extracted = 0.0 # Cumulative measure for how much solute leaves outlet_pores
+        self.total_extracted_by_solute = {}
+        self.initial_extractable_mass_by_solute = {}
+        self.yield_by_solute = {}
         if solute_classes is None:
             self.solute_classes = {
                 # TODO: Tune amount of coffee present initially and other parameters
-                'acids': {'k' : 10e-3, 'concentration' : 12e8, 'c_sat' : 150.0}, # Target initial mass is 6.47e-2
+                'acids': {'k' : 2e-3, 'concentration' : 16e3, 'c_sat' : 45e3}, # Target initial mass is 2.041e-3
             }
         else:
             self.solute_classes = solute_classes
@@ -185,9 +191,11 @@ class Simulation:
                     model=op.models.geometry.pore_volume.sphere,
                     pore_diameter='pore.diameter')
         
-        pn.add_model(propname='pore.area',
+        pn.add_model(propname='pore.cross_sectional_area',
                     model=op.models.geometry.pore_cross_sectional_area.sphere,
                     pore_diameter='pore.diameter')
+        
+        pn['pore.shape_factor'] = 0.07 # Assume spherical shape factor
         
         pn.add_model(propname='throat.length',
                      model=op.models.geometry.throat_length.pyramids_and_cuboids,
@@ -195,11 +203,18 @@ class Simulation:
                      throat_diameter='throat.diameter')
         
         pn.add_model(propname='throat.cross_sectional_area',
-                    model=op.models.geometry.throat_cross_sectional_area.cylinder,
+                    model=op.models.geometry.throat_cross_sectional_area.cuboid,
                     throat_diameter='throat.diameter')
         
+        pn.add_model(propname='throat.perimeter',
+                     model=op.models.geometry.throat_perimeter.cuboid,
+                     throat_diameter='throat.diameter')
+        
+        pn['throat.shape_factor'] = pn['throat.cross_sectional_area'] / (pn['throat.perimeter'])**2
+        pn['throat.shape_factor'] = np.clip(pn['throat.shape_factor'], 0, 0.0795) # Safety cap
+        
         pn.add_model(propname='throat.volume',
-                     model=op.models.geometry.throat_volume.cylinder,
+                     model=op.models.geometry.throat_volume.cuboid,
                      throat_diameter='throat.diameter',
                      throat_length='throat.length')
         
@@ -213,6 +228,11 @@ class Simulation:
                     model=op.models.geometry.diffusive_size_factors.pyramids_and_cuboids,
                     pore_diameter='pore.diameter',
                     throat_diameter='throat.diameter')
+        
+        pn.add_model(propname='throat.conduit_lengths',
+                     model=op.models.geometry.conduit_lengths.pyramids_and_cuboids,
+                     pore_diameter='pore.diameter',
+                     throat_diameter='throat.diameter')
         
     def phase(self):
         pn = self.pn
@@ -252,10 +272,14 @@ class Simulation:
         phase = self.phase
         # Compiled properties of viscosity and ability to flow due to bulk fluid motion and diffusion as per the schemes specified
         phase.add_model(propname='throat.hydraulic_conductance',
-                        model=op.models.physics.hydraulic_conductance.hagen_poiseuille,
+                        model=op.models.physics.hydraulic_conductance.valvatne_blunt,
                         pore_viscosity='pore.viscosity',
                         throat_viscosity='throat.viscosity',
-                        size_factors='throat.hydraulic_size_factors')
+                        pore_shape_factor='pore.shape_factor',
+                        throat_shape_factor='throat.shape_factor',
+                        pore_area='pore.cross_sectional_area',
+                        throat_area='throat.cross_sectional_area',
+                        conduit_lengths='throat.conduit_lengths')
 
         phase.add_model(propname='throat.diffusive_conductance',
                        model=op.models.physics.diffusive_conductance.generic_diffusive,
@@ -277,9 +301,10 @@ class Simulation:
                         throat_conductivity='throat.thermal_conductivity',
                         size_factors='throat.diffusive_size_factors')
         
-    def brew(self, brew_time, pour_rate, time_steps=1, shrink_factor=0.99):
+    def brew(self, brew_time, pour_rate, time_steps=1, shrink_factor=0.99, fines_rng_seed=None):
         self.brew_time = brew_time
         self.pour_rate = pour_rate
+        self.pressures = []  # One snapshot per time step (after fines + Stokes solve), for pressure animation
         pn = self.pn
         phase = self.phase
 
@@ -291,16 +316,24 @@ class Simulation:
         rho_w = 965
         cp_w = 4190
 
-        # TODO: Tune fine migration parameters
-        # Maximum amount of fines in each throat
-        max_clog_capacity = pn['throat.volume'] * rho_s * (1-0.8)
-
-        V_total_cell = (pn['pore.diameter']**3) # Simplification of the voxel box
-        V_solid = np.maximum(V_total_cell - pn['pore.volume'],0)
-        phase['pore.fines_mass'] = (V_solid / V_solid.sum()) * 0.005
-
-        # Logs the fines that have been displaced and their location
-        phase['throat.clogged_mass'] = np.zeros(pn.Nt)
+        max_fines_per_pore = 100
+        rng_fines = np.random.default_rng(fines_rng_seed)
+        n_elite = max(1, int(round(0.1 * pn.Np)))
+        elite_idx = rng_fines.choice(pn.Np, size=n_elite, replace=False)
+        phase['pore.fines_elite'] = np.zeros(pn.Np, dtype=bool)
+        phase['pore.fines_elite'][elite_idx] = True
+        phase['pore.fines_elite_swollen'] = np.zeros(pn.Np, dtype=bool)
+        phase['pore.fines_count'] = np.where(phase['pore.fines_elite'], 100, 10).astype(int)
+        phase['throat.clogged_count'] = np.zeros(pn.Nt, dtype=int)
+        max_throat_capacity = 50
+        original_conductance = phase['throat.hydraulic_conductance'].copy()
+        # Fines migration: per-throat baseline min(fines) over the two endpoint pores (see brew loop).
+        _fc0 = phase['pore.fines_count']
+        _conns0 = pn['throat.conns']
+        initial_throat_pair_min = np.minimum(
+            _fc0[_conns0[:, 0]], _fc0[_conns0[:, 1]]
+        ).astype(np.float64)
+        initial_throat_pair_min = np.maximum(initial_throat_pair_min, 1.0)
 
         # Manual time step
         dt = brew_time / time_steps
@@ -313,7 +346,7 @@ class Simulation:
         bottom_pores_debug_mask = z_coords_for_debug <= bottom_cutoff"""
 
         # Recallable function to solve flow characteristics (pressure, flow rate)
-        def solve_flow(self, pour_rate):
+        def solve_flow(self, pour_rate, record_pressure=True):
             coords = pn.coords
             
             # Find boundary pores
@@ -321,7 +354,7 @@ class Simulation:
             inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
             outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-            inlet_pressure = 1000 * (pour_rate / 200) + 500  # Units of Pa
+            inlet_pressure = 1000 * 9.81 * (205e-4+5e-2) + (pour_rate*1e-6/(math.pi*(2.5e-3)**2))**2/2  # Units of Pa
             
             # Initialise Stokes flow
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)
@@ -331,13 +364,15 @@ class Simulation:
 
             # Set BC 
             flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
-            flow.set_value_BC(pores=outlet_pores, values=0.0)
+            flow.set_value_BC(pores=outlet_pores, values=200) # Backpressure due to filter paper resistance
             flow.run()
-            self.pressures.append(flow['pore.pressure'].copy())
+            if record_pressure:
+                self.pressures.append(flow['pore.pressure'].copy())
 
             # Copies results from flow 'local' to phase 'global'
             phase['pore.pressure'] = flow['pore.pressure']
             phase['throat.hydraulic_flow'] = flow.rate(throats=pn.Ts, mode='throat')
+            self.flow = flow
 
             # Recursively finds conductance based on actual flow
             phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
@@ -347,7 +382,10 @@ class Simulation:
         # Implement transient advection solvers for diffusion and thermal effects
         ad = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
         ad_thermo = op.algorithms.AdvectionDiffusion(network=pn, phase=phase)
-        ad_thermo.settings['conductance'] = 'throat.thermal_conductance'
+        # For temperature we want advection-diffusion in *energy* units.
+        # We'll build `throat.ad_dif_heat_conductance` inside `brew()` each time
+        # step using hydraulic flow scaled by (rho_w * cp_w).
+        ad_thermo.settings['conductance'] = 'throat.ad_dif_heat_conductance'
 
         for solute_name, params in self.solute_classes.items():
             # Initial setup for how much solute is available for extraction and how much has been extracted
@@ -355,6 +393,11 @@ class Simulation:
             ad_thermo['pore.temperature'] = 20.0 # Assume no preheating
             initial_mass, phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume'], float(params['concentration']) * pn['pore.volume']
             self.initial_mass = initial_mass
+            initial_extractable_mass = float(np.sum(initial_mass))
+            self.initial_extractable_mass_by_solute[solute_name] = initial_extractable_mass
+            self.total_extracted = 0.0
+            self.total_extracted_by_solute[solute_name] = 0.0
+            self.yield_by_solute[solute_name] = 0.0
 
             # Use as switches for swelling and temperature variation
             swelling_flag, temperature_flag = False, True
@@ -365,7 +408,7 @@ class Simulation:
             T_prev_step = 1e99
 
             # Initial call to solve flow (this will be the only call if no temperature or swelling variation)
-            inlet_pores, outlet_pores = solve_flow(self, pour_rate)
+            inlet_pores, outlet_pores = solve_flow(self, pour_rate, record_pressure=False)
 
             # Manual time stepping
             for step in range(time_steps):
@@ -382,7 +425,7 @@ class Simulation:
                     phase.regenerate_models()
 
                     # Resolve flow based on updated geometry and phase models
-                    inlet_pores, outlet_pores = solve_flow(self, pour_rate)
+                    inlet_pores, outlet_pores = solve_flow(self, pour_rate, record_pressure=False)
 
                     # If all pores and throats are at minimum allowed diameter, prevent further swelling
                     if pn['throat.diameter'].all() <= 1e-6 and pn['pore.diameter'].all() <= 1e-5:
@@ -418,7 +461,7 @@ class Simulation:
                     phase.regenerate_models(propnames="throat.thermal_conductance")
 
                     # Resolve flow based on updated phase models 
-                    inlet_pores, outlet_pores = solve_flow(self, pour_rate)
+                    inlet_pores, outlet_pores = solve_flow(self, pour_rate, record_pressure=False)
 
                     # If all pore temperature is same as previous step, prevent further updating
                     if np.array_equal(T_pore,T_prev_step):
@@ -426,68 +469,42 @@ class Simulation:
                     else:
                         T_prev_step = phase['pore.temperature'].copy()
 
-                # Solve temperature variation
-                # Start by building A and b matrices in Ax=b
-                ad_thermo._build_A()
-                ad_thermo._build_b()
-
-                # Calculate flow outflow, to be used in solute and thermal outflow
-                Q_out = np.zeros(pn.Np)
-                for pore in outlet_pores:
-                    # Find all throats connected to this specific outlet pore
-                    connected_throats = pn.find_neighbor_throats(pores=pore)
-                    
-                    # Since water is incompressible and the network ends here, 
-                    # the absolute sum of flow in these throats is exactly the flow leaving into the cup.
-                    Q_out[pore] = np.sum(np.abs(phase['throat.hydraulic_flow'][connected_throats]))
-
                 # Calculate actual porosity at this stage since heat capacity also needs it
                 self.actual_porosity = self.im[self.cone_mask].sum() / self.cone_mask.sum()
 
-                # Calculate thermal accumulation (Density * Heat Capacity * Volume / dt)
-                # Heat capacity is of the water-filled pore and the solid grain
+                # Thermal accumulation: (fluid + solid) heat capacity over dt — same unknown as T (°C).
                 vol_term_thermal = (rho_w * cp_w * pn['pore.volume'] + rho_s * cp_s * (pn['pore.volume'] * ((1-self.actual_porosity)/self.actual_porosity))) / dt
+
+                # Heat advection–diffusion: throat "hydraulic" weight for the thermal AD problem is the
+                # volumetric conductance (m³/s) times rho*cp so inter-pore fluxes match enthalpy advection
+                # rho*cp*Q*DeltaT alongside the transient term rho*cp*V*dT/dt (plus solid storage).
+                """phase['throat.hydraulic_conductance_heat'] = phase['throat.hydraulic_conductance'] * rho_w * cp_w
+                phase['throat.ad_dif_heat_conductance'] = op.models.physics.ad_dif_conductance.ad_dif(
+                    phase,
+                    pore_pressure='pore.pressure',
+                    throat_hydraulic_conductance='throat.hydraulic_conductance_heat',
+                    throat_diffusive_conductance='throat.thermal_conductance',
+                    s_scheme='powerlaw',
+                )"""
+
+                ad_thermo.settings['conductance'] = 'throat.thermal_conductance'
+
+                # 1. Start by clearing any old BCs and building the base spatial matrices
+                ad_thermo.clear_BCs()
+                ad_thermo.set_value_BC(pores=inlet_pores, values=95.0) # Inlet is fixed at 95C
+                ad_thermo.set_outflow_BC(pores=outlet_pores)           # Let heat flow out naturally
                 
-                # Calculate thermal drain due to outflow
-                thermal_drain = np.zeros(pn.Np)
-                # Outflow sink for the advected "temperature" variable should be scaled
-                # like the concentration outflow (i.e. proportional to volumetric flow).
-                # Multiplying by rho*cp makes this term inconsistent with ad_thermo's units.
-                thermal_drain[outlet_pores] = Q_out[outlet_pores]
+                ad_thermo._build_A()
+                ad_thermo._build_b()
+                ad_thermo._apply_BCs()
 
-                """# Debug: thermal_drain magnitude vs solver diagonal
-                if step in {0, time_steps // 2, time_steps - 1}:
-                    diag_ad = ad_thermo.A.diagonal()
-                    if len(outlet_pores) > 0:
-                        td_out = thermal_drain[outlet_pores]
-                        diag_out = diag_ad[outlet_pores]
-                        guard = np.where(diag_out != 0, diag_out, np.nan)
-                        ratio = td_out / guard
-                        print(
-                            f"[thermo drain debug] step={step+1}/{time_steps} "
-                            f"outlet_pores={len(outlet_pores)} "
-                            f"thermal_drain_out_min={float(np.nanmin(td_out)):.3e} "
-                            f"thermal_drain_out_max={float(np.nanmax(td_out)):.3e} "
-                            f"diag_out_median={float(np.nanmedian(diag_out)):.3e} "
-                            f"ratio_td_to_diag_median={float(np.nanmedian(ratio)):.3g} "
-                            f"ratio_min={float(np.nanmin(ratio)):.3g} ratio_max={float(np.nanmax(ratio)):.3g}"
-                        )"""
+                # 2. Add your custom Transient Accumulation (Dual-Mass)
+                vol_term_thermal = (rho_w * cp_w * pn['pore.volume'] + rho_s * cp_s * (pn['pore.volume'] * ((1-self.actual_porosity)/self.actual_porosity))) / dt
 
-                # IMPORTANT: `AdvectionDiffusion` already includes the transient/accumulation
-                # term internally for the field `ad_thermo['pore.temperature']`.
-                # Adding `vol_term_thermal` again double-counts accumulation and can over-cool parts
-                # of the domain. Keep only the explicit outlet drain as an extra sink term.
-                A_mat_T = ad_thermo.A + diags([thermal_drain], [0], format='csr')
-                b_vec_T = ad_thermo.b
+                A_mat_T = ad_thermo.A + diags([vol_term_thermal], [0], format='csr')
+                b_vec_T = ad_thermo.b + (vol_term_thermal * phase['pore.temperature'])
 
-                # Apply BC
-                A_lil_T = A_mat_T.tolil() # Convert to LIL format for faster row operations
-                A_lil_T[inlet_pores, :] = 0.0
-                A_lil_T[inlet_pores, inlet_pores] = 1.0
-                A_mat_T = A_lil_T.tocsr() # Convert back to csr format for sparse solver
-                b_vec_T[inlet_pores] = 95 # 95°C Inlet
-
-                # Solve for temperature (pypardiso is a faster solver but may trip if matrix is not well conditioned)
+                # 3. Solve! (Notice we don't need the manual A_lil_T boundary hacks anymore!)
                 T_new = pypardiso_spsolve(A_mat_T, b_vec_T)
                 if np.isnan(T_new).any():
                     T_new = scipy_spsolve(A_mat_T, b_vec_T)
@@ -507,8 +524,8 @@ class Simulation:
                         )"""
 
                 # Save mean temperature at each time step
-                #self.temperature_variation['unclipped'].append(np.mean(T_new))
-                #self.temperature_fields['unclipped'].append(T_new.copy())
+                self.temperature_variation['unclipped'].append(np.mean(T_new))
+                self.temperature_fields['unclipped'].append(T_new.copy())
 
                 T_clipped = np.clip(T_new, T_min_c, T_max_c) # Keep between 20C and 95C
                 self.temperature_variation['final'].append(np.mean(T_clipped))
@@ -551,36 +568,28 @@ class Simulation:
 
                 print(f"Corrected Residence Time: {V_total / Q_total} seconds at time step {step}")"""
 
-                # Build original version of A and b for solute flow
+                # Solute AD: same pattern as thermal — BCs via the algorithm, then custom RHS/matrix terms.
+                ad.clear_BCs()
+                ad.set_value_BC(pores=inlet_pores, values=0.0)  # fresh feed, C = 0
+                ad.set_outflow_BC(pores=outlet_pores)
+                
                 ad._build_A()
                 ad._build_b()
+                ad._apply_BCs()
 
-                # Calculate extraction equation
-                # Calculate A1 and A2 (Y = A1X + A2)
+                # Extraction linearization Y = A1*C + A2 (same kinetics as post-step mass update).
                 placeholder = np.ones(pn.Np)
                 remaining_ratio = phase[f'pore.{solute_name}_available'] / initial_mass
                 A1 = -params['k'] * remaining_ratio * placeholder * pn['pore.volume']
                 A2 = params['k'] * params['c_sat'] * remaining_ratio * placeholder * pn['pore.volume']
-
-                # IMPORTANT: `AdvectionDiffusion` already includes the transient/accumulation
-                # term for `ad['pore.concentration']`, so we should not add `vol_term` again.
-                # Only add the reaction/extraction contribution (from A1/A2) here.
-                # `A1` is negative in your linearization, so `-A1` is the diagonal sink/source weight.
-                M_source = spdiags(data=-A1, diags=0, m=pn.Np, n=pn.Np)
-                M_outflow = diags([Q_out], [0], format='csr')
-                A_mat = ad.A + M_source - M_outflow
-                # `ad.b` already contains the transient term contributions using the current
-                # `ad['pore.concentration']` (previous time step).
-                b_vec = ad.b + A2
-
-                # Enforce boundary conditions for A matrix
-                A_lil = A_mat.tolil() # Converts matrix from CSR to LIL format for faster row operations
-                A_lil[inlet_pores, :] = 0.0 # Zeros row for boundary pores
-                A_lil[inlet_pores, inlet_pores] = 1.0 # Puts 1s on the diagonal
-                A_mat = A_lil.tocsr() # Converts back to CSR format
-
-                # Enforce boundary conditions for b vector
-                b_vec[inlet_pores] = 0.0
+                # Do not add extraction on Dirichlet inlet pores (equivalent to former row-zeroing).
+                A1_eff = A1.copy()
+                A2_eff = A2.copy()
+                A1_eff[inlet_pores] = 0.0
+                A2_eff[inlet_pores] = 0.0
+                M_source = spdiags(data=-A1_eff, diags=0, m=pn.Np, n=pn.Np)
+                A_mat = ad.A + M_source
+                b_vec = ad.b + A2_eff
                 
                 """# Error handling for 0 on the diagonals 
                 diagonals = A_mat.diagonal() 
@@ -602,61 +611,116 @@ class Simulation:
                 # Update remaining solute and ensure extraction does not exceed available
                 driving_force = np.maximum(0, params['c_sat'] - C_new)
                 mass_to_extract = params['k'] * driving_force * pn['pore.volume'] * dt
-                phase[f'pore.{solute_name}_available'] -= np.minimum(mass_to_extract, phase[f'pore.{solute_name}_available'])
+                extracted_step = np.minimum(mass_to_extract, phase[f'pore.{solute_name}_available'])
+                phase[f'pore.{solute_name}_available'] -= extracted_step
 
                 # Store for data visualisation
                 if solute_name == 'acids':
                     self.time_steps.append(t)
                 self.concentrations[solute_name].append(C_new.copy())
-                self.total_extracted += np.mean(np.maximum(mass_to_extract, 0))      
+                self.total_extracted += float(np.sum(np.maximum(extracted_step, 0.0)))
+                self.total_extracted_by_solute[solute_name] = self.total_extracted
+                bean_mass = initial_extractable_mass / 0.3
+                self.yield_by_solute[solute_name] = (self.total_extracted / bean_mass) if bean_mass > 0 else np.nan
 
-                # Velocity through each throat
-                u_throats = np.abs(phase['throat.hydraulic_flow']) / pn['throat.cross_sectional_area']
+                # Velocity and flow direction (use throat hydraulic flow, not conductance)
+                h_flow = phase['throat.hydraulic_flow']
+                u_throats = np.abs(h_flow) / pn['throat.cross_sectional_area']
 
-                # TODO: Tune fines migration -> clogging
-                # 1. Identify which pore is "Upstream" for every throat
-                # pn['throat.conns'] is (Nt, 2). 
-                # flow > 0 means water goes from col 0 to col 1.
-                flow = phase['throat.hydraulic_flow']
-                upstream_pores = np.where(flow > 0, pn['throat.conns'][:, 0], pn['throat.conns'][:, 1])
+                upstream_pores = np.where(h_flow > 0, pn['throat.conns'][:, 0], pn['throat.conns'][:, 1])
+                downstream_pores = np.where(h_flow > 0, pn['throat.conns'][:, 1], pn['throat.conns'][:, 0])
 
-                entrainment_rate = 0.001 # Rate at which fines are dislodged once u > critical_velocity
-                critical_velocity = 0.1 # Speed above which fines are dislodged
+                # 2. Probabilistic Entrainment
+                # Per-throat: P = min(1, u * p_scale). p_scale = 0.2 * (pair_min / initial_pair_min)
+                # where pair_min is min(fines) over the two pores of that throat; drops as those pores deplete.
+                _c = phase['pore.fines_count']
+                _tc = pn['throat.conns']
+                pair_min = np.minimum(_c[_tc[:, 0]], _c[_tc[:, 1]]).astype(np.float64)
+                p_probability_scale = 0.4 * (pair_min / initial_throat_pair_min)
+                p_move = np.minimum(1.0, u_throats * p_probability_scale)
 
-                # 2. Calculate entrainment for every throat (as a mass per second)
-                # mobile_rate is (Nt,)
-                mobile_rate = np.where(
-                    u_throats > critical_velocity, 
-                    entrainment_rate, 
-                    0
-                )
+                # 3. Binomial Draw: How many fines WANT to move?
+                available_fines = phase['pore.fines_count'][upstream_pores]
+                fines_to_pull = np.random.binomial(n=available_fines, p=p_move)
 
-                # 3. Calculate actual mass to move this step (kg)
-                # We pull from the 'fines_mass' of the upstream_pores
-                mass_to_pull = phase['pore.fines_mass'][upstream_pores] * mobile_rate * dt
+                # --- TRAFFIC CONTROL 1: Prevent "Overdrawing" ---
+                # Multiple throats might pull from the same pore, requesting more fines than exist.
+                total_requested = np.bincount(upstream_pores, weights=fines_to_pull, minlength=pn.Np)
+                overdrawn_pores = total_requested > phase['pore.fines_count']
 
-                # 4. Update the Pores (Mass Conservation)
-                # Since multiple throats might pull from the same pore, use np.add.at for safety
-                np.add.at(phase['pore.fines_mass'], upstream_pores, -mass_to_pull)
-                phase['pore.fines_mass'] = np.maximum(phase['pore.fines_mass'], 0)
+                # Scale down the requests proportionally, flooring to keep integers
+                scale_factor = np.ones(pn.Np)
+                scale_factor[overdrawn_pores] = phase['pore.fines_count'][overdrawn_pores] / total_requested[overdrawn_pores]
+                fines_to_pull = np.floor(fines_to_pull * scale_factor[upstream_pores]).astype(int)
 
-                # Identify downstream pores
-                downstream_pores = np.where(flow > 0, pn['throat.conns'][:, 1], pn['throat.conns'][:, 0])
-
-                # Finds small throats
+                # --- TRAFFIC CONTROL 2: Enforce the 100-Particle Limit ---
                 is_small = pn['throat.diameter'] < 100e-6
 
-                # Add to clogs
-                phase['throat.clogged_mass'] += mass_to_pull * is_small
+                # Fines that survive the throat diameter check
+                arriving_at_pores = fines_to_pull * (~is_small)
+                total_arriving = np.bincount(downstream_pores, weights=arriving_at_pores, minlength=pn.Np)
 
-                # Add the rest to the next pore's "available" fines
-                np.add.at(phase['pore.fines_mass'], downstream_pores, mass_to_pull * (~is_small))
+                available_space = np.maximum(max_fines_per_pore - phase['pore.fines_count'], 0)
+                overflow_pores = total_arriving > available_space
 
-                # Conductance decreases with clogging ratio in accordance with power law
-                clogging_ratio = phase['throat.clogged_mass'] / max_clog_capacity
-                phase['throat.hydraulic_conductance'] *= (1-clogging_ratio)**3
+                # If more arrive than space permits, reject the excess
+                accept_factor = np.ones(pn.Np)
+                accept_factor[overflow_pores] = available_space[overflow_pores] / total_arriving[overflow_pores]
 
-                phase.regenerate_models(propnames='throat.hydraulic_conductance')
+                # Fines that successfully enter the downstream pore
+                successful_transfer = np.floor(arriving_at_pores * accept_factor[downstream_pores]).astype(int)
+
+                # --- TRAFFIC CONTROL 3: Handle the Rejected Fines ---
+                # Fines that didn't fit into the downstream pore get jammed in the throat
+                rejected_by_pore = arriving_at_pores - successful_transfer
+
+                # Total fines stuck in the throat = (caught by small diameter) + (rejected by full pore)
+                fines_clogging = (fines_to_pull * is_small) + rejected_by_pore
+
+                fines_count_before = phase['pore.fines_count'].copy()
+
+                # 4. Update the Discrete Counts
+                np.add.at(phase['pore.fines_count'], upstream_pores, -fines_to_pull)
+                np.add.at(phase['pore.fines_count'], downstream_pores, successful_transfer)
+                phase['throat.clogged_count'] += fines_clogging
+
+                # Elite pores: one-time swell when inventory first hits zero (no fines refill).
+                swell_mask = (
+                    phase['pore.fines_elite']
+                    & (~phase['pore.fines_elite_swollen'])
+                    & (fines_count_before > 0)
+                    & (phase['pore.fines_count'] == 0)
+                )
+                swell_ps = np.where(swell_mask)[0]
+                if swell_ps.size > 0:
+                    pn['pore.diameter'][swell_ps] *= 1.5
+                    pn['pore.diameter'][pn['pore.diameter'] < 1e-6] = 1e-6
+                    conns_td = pn['throat.conns']
+                    pn['throat.diameter'] = np.minimum(
+                        pn['pore.diameter'][conns_td[:, 0]],
+                        pn['pore.diameter'][conns_td[:, 1]],
+                    )
+                    pn['throat.diameter'][pn['throat.diameter'] < 1e-6] = 1e-6
+                    phase['pore.fines_elite_swollen'][swell_ps] = True
+                    pn.regenerate_models()
+                    phase.regenerate_models()
+                    original_conductance = phase['throat.hydraulic_conductance'].copy()
+
+                # 5. Update Conductance
+                # Use original conductance so the power law scales correctly every step
+                clogging_ratio = np.clip(phase['throat.clogged_count'] / max_throat_capacity, 0, 1)
+                phase['throat.hydraulic_conductance'] = original_conductance * (1 - clogging_ratio)**3
+
+                # Stokes solve after fines/clogging so pressure field matches current conductances (one snapshot per step).
+                inlet_pores, outlet_pores = solve_flow(self, pour_rate, record_pressure=True)
+
+                # Residence-time diagnostic: use solved outlet flow directly.
+                Q_total = float(
+                    np.abs(np.atleast_1d(self.flow.rate(pores=outlet_pores, mode='group')).sum())
+                )
+                V_total = np.sum(pn['pore.volume']) + np.sum(pn['throat.volume'])
+                rt = np.inf if Q_total <= 0 else (V_total / Q_total)
+                #print(f"Residence Time: {rt} seconds at time step {step+1}/{time_steps}, ")
 
     def generate_brewing_animation(self, solute_name='acids'):
         # Get coordinates
@@ -697,16 +761,71 @@ class Simulation:
         # To save as MP4 (requires ffmpeg)
         ani.save('coffee_extraction.gif', writer='pillow')
 
-    def generate_temperature_animation(self, save_path='temperature_debug.gif', interval=80):
+    def generate_pressure_animation(self, save_path='coffee_pressure.gif', interval=50):
+        """
+        Animate pore pressure on the same (y, z) slice grid as the solute GIF.
+        Snapshots are stored after each brew step (post–fines migration Stokes solve).
+        """
+        n_frames = len(self.pressures)
+        if n_frames == 0:
+            raise RuntimeError("No pressure snapshots; run brew() first.")
+
+        coords = self.pn['pore.coords']
+        y = coords[:, 1]
+        z = coords[:, 2]
+
+        xi = np.linspace(y.min(), y.max(), 100)
+        zi = np.linspace(z.min(), z.max(), 100)
+        xi, zi = np.meshgrid(xi, zi)
+
+        p_min = min(float(np.min(p)) for p in self.pressures)
+        p_max = max(float(np.max(p)) for p in self.pressures)
+        if not np.isfinite(p_min) or not np.isfinite(p_max) or p_max <= p_min:
+            p_max = p_min + 1.0
+
+        P0 = self.pressures[0]
+        grid0 = griddata((y, z), P0, (xi, zi), method='linear')
+
+        fig, ax = plt.subplots(figsize=(6, 8))
+        im = ax.imshow(
+            grid0,
+            extent=(y.min(), y.max(), z.min(), z.max()),
+            origin='lower',
+            aspect='auto',
+            cmap='viridis',
+            vmin=p_min,
+            vmax=p_max,
+        )
+        plt.colorbar(im, label='Pressure [Pa]')
+        ax.set_title('Pore pressure (after fines / Stokes)')
+        ax.set_xlabel('Width [m]')
+        ax.set_ylabel('Bed depth [m]')
+
+        use_time = len(self.time_steps) == n_frames
+
+        def update(frame):
+            P = self.pressures[frame]
+            grid_p = griddata((y, z), P, (xi, zi), method='linear')
+            im.set_array(grid_p)
+            if use_time:
+                ax.set_title(f't = {self.time_steps[frame]:.1f} s  |  step {frame}')
+            else:
+                ax.set_title(f'Pressure  |  step {frame}')
+            return [im]
+
+        ani = FuncAnimation(fig, update, frames=n_frames, interval=interval, blit=True)
+        ani.save(save_path, writer='pillow')
+
+    def generate_temperature_animation(self, save_path='temperature_debug.gif', interval=50):
         """
         Side-by-side animation of pore temperature heatmaps:
         - unclipped: raw T_new from the thermal linear solve
         - clipped: after applying the [20C, 95C] clamp
+        Color scale is fixed (80–95 °C) so GIFs are comparable across runs.
         """
-        if not self.temperature_fields.get('clipped'):
-            raise RuntimeError(
-                "No temperature fields stored. Run `brew()` first (or ensure the updated code path executes)."
-            )
+
+        # Fixed color limits for cross-run comparison (deg C).
+        t_vmin_gif, t_vmax_gif = 90.0, 95.0
 
         coords = self.pn['pore.coords']
         y = coords[:, 1]
@@ -721,40 +840,48 @@ class Simulation:
         if n_frames == 0:
             raise RuntimeError("Temperature animation has no frames to render.")
 
-        # Set color limits for easier visual comparison.
-        cl_vals = np.array([np.min(arr) for arr in self.temperature_fields['clipped'][:n_frames]])
-        cl_vals2 = np.array([np.max(arr) for arr in self.temperature_fields['clipped'][:n_frames]])
-
-        cl_vmin = float(np.min(cl_vals))
-        cl_vmax = float(np.max(cl_vals2))
-
         # Initial frames
         T_cl0 = self.temperature_fields['clipped'][0]
+        T_ucl0 = self.temperature_fields['unclipped'][0]
 
         grid_cl0 = griddata((y, z), T_cl0, (xi, zi), method='linear')
+        grid_ucl0 = griddata((y, z), T_ucl0, (xi, zi), method='linear')
 
-        fig, axes = plt.subplots(1, 1, figsize=(12, 7))
+        fig, axes = plt.subplots(1, 2, figsize=(18, 10))
         ax_cl = axes[0]
+        ax_ucl = axes[1]
 
         im_cl = ax_cl.imshow(
             grid_cl0, extent=(y.min(), y.max(), z.min(), z.max()),
-            origin='lower', aspect='auto', cmap='magma', vmin=cl_vmin, vmax=cl_vmax
+            origin='lower', aspect='auto', cmap='magma', vmin=t_vmin_gif, vmax=t_vmax_gif
+        )
+        im_ucl = ax_ucl.imshow(
+            grid_ucl0, extent=(y.min(), y.max(), z.min(), z.max()),
+            origin='lower', aspect='auto', cmap='magma', vmin=t_vmin_gif, vmax=t_vmax_gif
         )
 
         plt.colorbar(im_cl, ax=ax_cl, label='Temperature [C] (clipped)')
+        plt.colorbar(im_ucl, ax=ax_ucl, label='Temperature [C] (unclipped)')
 
         ax_cl.set_title(f'Clipped mean: {np.mean(T_cl0):.2f}C')
         ax_cl.set_xlabel('Width [m]')
         ax_cl.set_ylabel('Bed Depth [m]')
+        ax_ucl.set_title(f'Unclipped mean: {np.mean(T_ucl0):.2f}C')
+        ax_ucl.set_xlabel('Width [m]')
+        ax_ucl.set_ylabel('Bed Depth [m]')
 
         def update(frame):
             T_cl = self.temperature_fields['clipped'][frame]
+            T_ucl = self.temperature_fields['unclipped'][frame]
 
             grid_cl = griddata((y, z), T_cl, (xi, zi), method='linear')
+            grid_ucl = griddata((y, z), T_ucl, (xi, zi), method='linear')
 
             im_cl.set_array(grid_cl)
-            ax_cl.set_title(f'Clipped mean: {np.mean(T_cl):.2f}C')
-            return [im_cl]
+            im_ucl.set_array(grid_ucl)
+            ax_cl.set_title(f'Time Step: {frame}, Clipped mean: {np.mean(T_cl):.2f}C')
+            ax_ucl.set_title(f'Unclipped mean: {np.mean(T_ucl):.2f}C')
+            return [im_cl, im_ucl]
 
         ani = FuncAnimation(
             fig,
@@ -808,12 +935,13 @@ class Simulation:
         axes[2, 0].legend()
         axes[2, 0].grid(True, alpha=0.3)
 
-        # Plot 5: Mean temperature variation over time
+        # Plot 5: Mean temperature variation over time (fixed y-axis for cross-run comparison)
         for temp in self.temperature_variation.keys():
             axes[0,1].plot(self.time_steps, self.temperature_variation[temp], 'o-', alpha=0.7, label=temp)
         axes[0,1].set_xlabel('Time')
-        axes[0,1].set_ylabel('Mean temperature')
+        axes[0,1].set_ylabel('Mean temperature (°C)')
         axes[0,1].set_title('Mean temperature variation over time')
+        axes[0,1].set_ylim(20.0, 100.0)
         axes[0,1].legend()
         axes[0,1].grid(True, alpha=0.3)
 
@@ -836,24 +964,19 @@ class Simulation:
 
         plt.tight_layout()
         plt.show()
+        plt.savefig(fname='results temp.png')
     
     def print_statistics(self):
         pn = self.pn
         phase = self.phase
 
-        flow = phase['throat.hydraulic_flow']
-
-        # Find all throats connecting the top half of the bed to the bottom half
-        z_coords = pn['pore.coords'][:, 2]
-        mid_z = np.median(z_coords)
-
-        top_pores = np.where(z_coords > mid_z)[0]
-        bot_pores = np.where(z_coords <= mid_z)[0]
-
-        # Throats that cross the middle plane
-        cross_throats = pn.find_connected_pores(top_pores, bot_pores)
-        # Flow rate
-        Q_total = np.sum(flow[cross_throats])
+        # Flow rate for residence-time estimate: use outlet flow from latest solved StokesFlow.
+        coords = pn['pore.coords']
+        tol = 1e-6
+        outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
+        Q_total = float(
+            np.abs(np.atleast_1d(self.flow.rate(pores=outlet_pores, mode='group')).sum())
+        )
 
         V_total = np.sum(pn['pore.volume']) + np.sum(pn['throat.volume'])
 
@@ -883,13 +1006,18 @@ class Simulation:
         print(f"  Diffusivity: {self.phase['pore.diffusivity'][0]:.3e} m²/s")
         print(f"\nBrewing Progress:")
         print(f"  Total brew time: {self.time_steps[-1]:.1f}s")
-        print(f"Corrected Residence Time: {V_total / Q_total} seconds")
+        rt = np.inf if Q_total <= 0 else (V_total / Q_total)
+        print(f"Corrected Residence Time: {rt} seconds")
         if self.concentrations:
             for solute in self.solute_classes.keys():
                 print(f" {solute} statistics:")
-                print("Total mass to be extracted: ", np.sum(self.initial_mass))
-                print(f"Extracted mass: {self.total_extracted}")
-                print(f"EY: {self.total_extracted/np.sum(self.initial_mass):%}")
-                print(f"TDS: {(self.total_extracted / (self.brew_time*self.pour_rate)):%}")
+                initial_extractable_mass = self.initial_extractable_mass_by_solute.get(solute, float(np.sum(self.initial_mass)))
+                extracted_mass = self.total_extracted_by_solute.get(solute, self.total_extracted)
+                bean_mass = initial_extractable_mass / 0.3
+                yield_val = (extracted_mass / bean_mass) if bean_mass > 0 else np.nan
+                print("Total mass to be extracted: ", initial_extractable_mass)
+                print(f"Extracted mass: {extracted_mass}")
+                print(f"Yield: {yield_val:%}")
+                print(f"TDS: {(extracted_mass / ((self.brew_time*self.pour_rate*1e-6*1000) - (2.6 * bean_mass))):%}")
                 print()
         print(f"{'='*60}\n")

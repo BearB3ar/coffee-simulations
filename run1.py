@@ -1,10 +1,15 @@
+import random
+import numpy as np
 import base_realistic_run 
+
+np.random.seed(0)
+random.seed(0)
 
 sim = base_realistic_run.Simulation(
     # Full V60 size is approximately [500,500,410]
     domain_shape=[265,265,205],
     porosity = 0.44,
-    temperature = 95,
+    temperature = 92,
     particle_size_dist = 'twin_lognormal'
 )
 
@@ -24,9 +29,11 @@ sim.brew(
     brew_time = 120,
     pour_rate = 2,
     time_steps = 120,
-    shrink_factor = 1 # Choose 1 to neglect swelling effects
+    shrink_factor = 1, # Choose 1 to neglect swelling effects
+    fines_rng_seed = 0
 )
 sim.generate_brewing_animation()
-sim.generate_temperature_animation()
+#sim.generate_pressure_animation()
+#sim.generate_temperature_animation()
 sim.plot_results()
 sim.print_statistics()
