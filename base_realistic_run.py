@@ -49,12 +49,19 @@ class Simulation:
         self.pressures = []  # Filled in brew(): one snapshot per step after fines + Stokes (see generate_pressure_animation)
         self.total_extracted = 0.0 # Cumulative measure for how much solute leaves outlet_pores
         self.total_extracted_by_solute = {}
+        self.extracted_mass_history_by_solute = {}
         self.initial_extractable_mass_by_solute = {}
         self.yield_by_solute = {}
         if solute_classes is None:
             self.solute_classes = {
                 # TODO: Tune amount of coffee present initially and other parameters
-                'acids': {'k' : 2e-3, 'concentration' : 16e3, 'c_sat' : 45e3}, # Target initial mass is 2.041e-3
+                'acids': {
+                    'k_fast': 2e-3,
+                    'k_slow': 8e-5,
+                    'f_fast': 0.67, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
+                    'concentration': 15e3,
+                    'c_sat': 45e3,
+                }, # Target initial mass is 2.041e-3
             }
         else:
             self.solute_classes = solute_classes
@@ -391,12 +398,18 @@ class Simulation:
             # Initial setup for how much solute is available for extraction and how much has been extracted
             ad['pore.concentration'] = 0.0 # Note ad 'local'
             ad_thermo['pore.temperature'] = 20.0 # Assume no preheating
-            initial_mass, phase[f'pore.{solute_name}_available'] = float(params['concentration']) * pn['pore.volume'], float(params['concentration']) * pn['pore.volume']
+            initial_mass = float(params['concentration']) * pn['pore.volume']
+            phase[f'pore.{solute_name}_available'] = initial_mass.copy()
+            initial_mass_fast = float(params['f_fast']) * initial_mass
+            initial_mass_slow = (1.0 - float(params['f_fast'])) * initial_mass
+            phase[f'pore.{solute_name}_available_fast'] = initial_mass_fast.copy()
+            phase[f'pore.{solute_name}_available_slow'] = initial_mass_slow.copy()
             self.initial_mass = initial_mass
             initial_extractable_mass = float(np.sum(initial_mass))
             self.initial_extractable_mass_by_solute[solute_name] = initial_extractable_mass
             self.total_extracted = 0.0
             self.total_extracted_by_solute[solute_name] = 0.0
+            self.extracted_mass_history_by_solute[solute_name] = []
             self.yield_by_solute[solute_name] = 0.0
 
             # Use as switches for swelling and temperature variation
@@ -578,10 +591,21 @@ class Simulation:
                 ad._apply_BCs()
 
                 # Extraction linearization Y = A1*C + A2 (same kinetics as post-step mass update).
-                placeholder = np.ones(pn.Np)
-                remaining_ratio = phase[f'pore.{solute_name}_available'] / initial_mass
-                A1 = -params['k'] * remaining_ratio * placeholder * pn['pore.volume']
-                A2 = params['k'] * params['c_sat'] * remaining_ratio * placeholder * pn['pore.volume']
+                remaining_fast = np.divide(
+                    phase[f'pore.{solute_name}_available_fast'],
+                    initial_mass_fast,
+                    out=np.zeros_like(initial_mass_fast),
+                    where=initial_mass_fast > 0,
+                )
+                remaining_slow = np.divide(
+                    phase[f'pore.{solute_name}_available_slow'],
+                    initial_mass_slow,
+                    out=np.zeros_like(initial_mass_slow),
+                    where=initial_mass_slow > 0,
+                )
+                k_eff = (params['k_fast'] * remaining_fast) + (params['k_slow'] * remaining_slow)
+                A1 = -k_eff * pn['pore.volume']
+                A2 = k_eff * params['c_sat'] * pn['pore.volume']
                 # Do not add extraction on Dirichlet inlet pores (equivalent to former row-zeroing).
                 A1_eff = A1.copy()
                 A2_eff = A2.copy()
@@ -610,9 +634,17 @@ class Simulation:
 
                 # Update remaining solute and ensure extraction does not exceed available
                 driving_force = np.maximum(0, params['c_sat'] - C_new)
-                mass_to_extract = params['k'] * driving_force * pn['pore.volume'] * dt
-                extracted_step = np.minimum(mass_to_extract, phase[f'pore.{solute_name}_available'])
-                phase[f'pore.{solute_name}_available'] -= extracted_step
+                mass_from_fast = params['k_fast'] * driving_force * pn['pore.volume'] * dt
+                mass_from_slow = params['k_slow'] * driving_force * pn['pore.volume'] * dt
+                extracted_fast = np.minimum(mass_from_fast, phase[f'pore.{solute_name}_available_fast'])
+                extracted_slow = np.minimum(mass_from_slow, phase[f'pore.{solute_name}_available_slow'])
+                phase[f'pore.{solute_name}_available_fast'] -= extracted_fast
+                phase[f'pore.{solute_name}_available_slow'] -= extracted_slow
+                phase[f'pore.{solute_name}_available'] = (
+                    phase[f'pore.{solute_name}_available_fast']
+                    + phase[f'pore.{solute_name}_available_slow']
+                )
+                extracted_step = extracted_fast + extracted_slow
 
                 # Store for data visualisation
                 if solute_name == 'acids':
@@ -620,6 +652,7 @@ class Simulation:
                 self.concentrations[solute_name].append(C_new.copy())
                 self.total_extracted += float(np.sum(np.maximum(extracted_step, 0.0)))
                 self.total_extracted_by_solute[solute_name] = self.total_extracted
+                self.extracted_mass_history_by_solute[solute_name].append(self.total_extracted)
                 bean_mass = initial_extractable_mass / 0.3
                 self.yield_by_solute[solute_name] = (self.total_extracted / bean_mass) if bean_mass > 0 else np.nan
 
@@ -935,13 +968,24 @@ class Simulation:
         axes[2, 0].legend()
         axes[2, 0].grid(True, alpha=0.3)
 
-        # Plot 5: Mean temperature variation over time (fixed y-axis for cross-run comparison)
-        for temp in self.temperature_variation.keys():
-            axes[0,1].plot(self.time_steps, self.temperature_variation[temp], 'o-', alpha=0.7, label=temp)
+        # Plot 5: Final beverage concentration over time using retained-fluid correction.
+        time_arr = np.asarray(self.time_steps, dtype=float)
+        water_passed_so_far = self.pour_rate * 1e-6 * 1000.0 * time_arr
+        for solute in self.solute_classes.keys():
+            extracted_hist = np.asarray(self.extracted_mass_history_by_solute.get(solute, []), dtype=float)
+            n = min(len(time_arr), len(extracted_hist))
+            if n == 0:
+                continue
+            coffee_mass = self.initial_extractable_mass_by_solute[solute] / 0.3
+            retained_water_mass = 2.6 * coffee_mass
+            denominator = water_passed_so_far[:n] - retained_water_mass
+            beverage_conc = np.full(n, np.nan, dtype=float)
+            valid = denominator > 0
+            beverage_conc[valid] = extracted_hist[:n][valid] / denominator[valid]
+            axes[0,1].plot(time_arr[:n], beverage_conc, 'o-', alpha=0.7, label=solute)
         axes[0,1].set_xlabel('Time')
-        axes[0,1].set_ylabel('Mean temperature (°C)')
-        axes[0,1].set_title('Mean temperature variation over time')
-        axes[0,1].set_ylim(20.0, 100.0)
+        axes[0,1].set_ylabel('Final beverage concentration')
+        axes[0,1].set_title('Final beverage concentration vs time')
         axes[0,1].legend()
         axes[0,1].grid(True, alpha=0.3)
 
@@ -964,7 +1008,6 @@ class Simulation:
 
         plt.tight_layout()
         plt.show()
-        plt.savefig(fname='results temp.png')
     
     def print_statistics(self):
         pn = self.pn

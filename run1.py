@@ -32,7 +32,7 @@ sim.brew(
     shrink_factor = 1, # Choose 1 to neglect swelling effects
     fines_rng_seed = 0
 )
-sim.generate_brewing_animation()
+#sim.generate_brewing_animation()
 #sim.generate_pressure_animation()
 #sim.generate_temperature_animation()
 sim.plot_results()
