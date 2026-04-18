@@ -1,0 +1,4 @@
+# Environment Policy
+- The project MUST run within the 'pnm' conda environment.
+- Any terminal command to do with file execution must be prefixed with 'conda activate pnm &&'.
+- Do not assume the environment is persistent across different terminal runs; always chain the activation.

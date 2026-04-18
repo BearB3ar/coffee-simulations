@@ -56,11 +56,11 @@ class Simulation:
             self.solute_classes = {
                 # TODO: Tune amount of coffee present initially and other parameters
                 'acids': {
-                    'k_fast': 2e-3,
-                    'k_slow': 8e-5,
-                    'f_fast': 0.67, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
+                    'k_fast': 10,
+                    'k_slow': 0.57,
+                    'f_fast': 0.85, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
                     'concentration': 15e3,
-                    'c_sat': 45e3,
+                    'c_sat': 320,
                 }, # Target initial mass is 2.041e-3
             }
         else:
@@ -78,9 +78,9 @@ class Simulation:
         # Approximates the grinds distribution as 2 separate lognormal curves
         if self.particle_size_dist == "twin_lognormal":
             x_axis = np.arange(0.5,100,0.5)
-            target_peak = scipy.stats.lognorm(s=0.42, scale=(650e-6/2)/1e-4) # s sets the standard deviation, scale sets the median (units of voxels)
+            target_peak = scipy.stats.lognorm(s=0.42, scale=(325e-6)/1e-4) # s sets the standard deviation, scale sets the median (units of voxels)
             weight_target = 0.92 
-            fines_peak = scipy.stats.lognorm(s=0.8, scale=(100e-6/2)/1e-4)
+            fines_peak = scipy.stats.lognorm(s=0.8, scale=(50e-6)/1e-4)
             weight_fines = 0.08
 
             probs = (target_peak.pdf(x_axis) * weight_target) + (fines_peak.pdf(x_axis) * weight_fines) # Both curves are weighted and rebased
@@ -99,13 +99,13 @@ class Simulation:
 
             im = np.logical_or(im_main, im_fines).astype(int)
 
-        # Trimming to cone geometry
+        """# Trimming to cone geometry
         x,y,z = np.ogrid[0:shape[0], 0:shape[1], 0:shape[2]]
         center_y, center_x = shape[0] // 2, shape[1] // 2
         radius_at_z = -(z + 20) * np.tan(np.radians(30))
         cone_mask = ((x - center_x)**2 + (y - center_y)**2) <= radius_at_z**2
         self.cone_mask = cone_mask # Needed for porosity calculation at the end
-        im = im & cone_mask
+        im = im & cone_mask"""
         
         self.im = im
     
@@ -308,7 +308,7 @@ class Simulation:
                         throat_conductivity='throat.thermal_conductivity',
                         size_factors='throat.diffusive_size_factors')
         
-    def brew(self, brew_time, pour_rate, time_steps=1, shrink_factor=0.99, fines_rng_seed=None):
+    def brew(self, brew_time, pour_rate, time_steps=1, shrink_factor=0.99, fines_rng_seed=None, store_snapshots=True):
         self.brew_time = brew_time
         self.pour_rate = pour_rate
         self.pressures = []  # One snapshot per time step (after fines + Stokes solve), for pressure animation
@@ -353,7 +353,7 @@ class Simulation:
         bottom_pores_debug_mask = z_coords_for_debug <= bottom_cutoff"""
 
         # Recallable function to solve flow characteristics (pressure, flow rate)
-        def solve_flow(self, pour_rate, record_pressure=True):
+        def solve_flow(self, pour_rate):
             coords = pn.coords
             
             # Find boundary pores
@@ -361,7 +361,7 @@ class Simulation:
             inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
             outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-            inlet_pressure = 1000 * 9.81 * (205e-4+5e-2) + (pour_rate*1e-6/(math.pi*(2.5e-3)**2))**2/2  # Units of Pa
+            inlet_pressure = 50000  # Units of Pa
             
             # Initialise Stokes flow
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)
@@ -373,7 +373,7 @@ class Simulation:
             flow.set_value_BC(pores=inlet_pores, values=inlet_pressure)
             flow.set_value_BC(pores=outlet_pores, values=200) # Backpressure due to filter paper resistance
             flow.run()
-            if record_pressure:
+            if store_snapshots:
                 self.pressures.append(flow['pore.pressure'].copy())
 
             # Copies results from flow 'local' to phase 'global'
@@ -421,7 +421,7 @@ class Simulation:
             T_prev_step = 1e99
 
             # Initial call to solve flow (this will be the only call if no temperature or swelling variation)
-            inlet_pores, outlet_pores = solve_flow(self, pour_rate, record_pressure=False)
+            inlet_pores, outlet_pores = solve_flow(self, pour_rate)
 
             # Manual time stepping
             for step in range(time_steps):
@@ -438,7 +438,7 @@ class Simulation:
                     phase.regenerate_models()
 
                     # Resolve flow based on updated geometry and phase models
-                    inlet_pores, outlet_pores = solve_flow(self, pour_rate, record_pressure=False)
+                    inlet_pores, outlet_pores = solve_flow(self, pour_rate)
 
                     # If all pores and throats are at minimum allowed diameter, prevent further swelling
                     if pn['throat.diameter'].all() <= 1e-6 and pn['pore.diameter'].all() <= 1e-5:
@@ -474,7 +474,7 @@ class Simulation:
                     phase.regenerate_models(propnames="throat.thermal_conductance")
 
                     # Resolve flow based on updated phase models 
-                    inlet_pores, outlet_pores = solve_flow(self, pour_rate, record_pressure=False)
+                    inlet_pores, outlet_pores = solve_flow(self, pour_rate)
 
                     # If all pore temperature is same as previous step, prevent further updating
                     if np.array_equal(T_pore,T_prev_step):
@@ -538,11 +538,13 @@ class Simulation:
 
                 # Save mean temperature at each time step
                 self.temperature_variation['unclipped'].append(np.mean(T_new))
-                self.temperature_fields['unclipped'].append(T_new.copy())
+                if store_snapshots:
+                    self.temperature_fields['unclipped'].append(T_new.copy())
 
                 T_clipped = np.clip(T_new, T_min_c, T_max_c) # Keep between 20C and 95C
                 self.temperature_variation['final'].append(np.mean(T_clipped))
-                self.temperature_fields['clipped'].append(T_clipped.copy())
+                if store_snapshots:
+                    self.temperature_fields['clipped'].append(T_clipped.copy())
 
                 # Debug: report temperatures in bottom region (unclipped vs clipped)
                 """if step in {0, time_steps // 2, time_steps - 1}:
@@ -649,7 +651,8 @@ class Simulation:
                 # Store for data visualisation
                 if solute_name == 'acids':
                     self.time_steps.append(t)
-                self.concentrations[solute_name].append(C_new.copy())
+                if store_snapshots:
+                    self.concentrations[solute_name].append(C_new.copy())
                 self.total_extracted += float(np.sum(np.maximum(extracted_step, 0.0)))
                 self.total_extracted_by_solute[solute_name] = self.total_extracted
                 self.extracted_mass_history_by_solute[solute_name].append(self.total_extracted)
@@ -745,7 +748,7 @@ class Simulation:
                 phase['throat.hydraulic_conductance'] = original_conductance * (1 - clogging_ratio)**3
 
                 # Stokes solve after fines/clogging so pressure field matches current conductances (one snapshot per step).
-                inlet_pores, outlet_pores = solve_flow(self, pour_rate, record_pressure=True)
+                inlet_pores, outlet_pores = solve_flow(self, pour_rate)
 
                 # Residence-time diagnostic: use solved outlet flow directly.
                 Q_total = float(
@@ -968,24 +971,29 @@ class Simulation:
         axes[2, 0].legend()
         axes[2, 0].grid(True, alpha=0.3)
 
-        # Plot 5: Final beverage concentration over time using retained-fluid correction.
+        # Plot 5: Differential beverage concentration vs cumulative liquid amount.
         time_arr = np.asarray(self.time_steps, dtype=float)
-        water_passed_so_far = self.pour_rate * 1e-6 * 1000.0 * time_arr
+        water_passed_so_far = self.pour_rate * 1e-6 * 1e6 * time_arr
         for solute in self.solute_classes.keys():
             extracted_hist = np.asarray(self.extracted_mass_history_by_solute.get(solute, []), dtype=float)
             n = min(len(time_arr), len(extracted_hist))
             if n == 0:
                 continue
-            coffee_mass = self.initial_extractable_mass_by_solute[solute] / 0.3
+            coffee_mass = self.initial_extractable_mass_by_solute[solute] * 1000 / 0.3
             retained_water_mass = 2.6 * coffee_mass
-            denominator = water_passed_so_far[:n] - retained_water_mass
+            beverage_mass_cum = np.maximum(0.0, water_passed_so_far[:n] - retained_water_mass)
+
+            # Differential concentration of liquid leaving the bed:
+            # c_brew = d(extracted_mass)/d(beverage_mass_collected), converted to mg/g.
+            d_extracted = np.diff(extracted_hist[:n], prepend=0.0)
+            d_beverage = np.diff(beverage_mass_cum, prepend=0.0)
             beverage_conc = np.full(n, np.nan, dtype=float)
-            valid = denominator > 0
-            beverage_conc[valid] = extracted_hist[:n][valid] / denominator[valid]
-            axes[0,1].plot(time_arr[:n], beverage_conc, 'o-', alpha=0.7, label=solute)
-        axes[0,1].set_xlabel('Time')
-        axes[0,1].set_ylabel('Final beverage concentration')
-        axes[0,1].set_title('Final beverage concentration vs time')
+            valid = d_beverage > 0
+            beverage_conc[valid] = 1e6 * (d_extracted[valid] / d_beverage[valid])
+            axes[0,1].plot(beverage_mass_cum, beverage_conc, 'o-', alpha=0.7, label=solute)
+        axes[0,1].set_xlabel('Cumulative liquid amount')
+        axes[0,1].set_ylabel('Differential beverage concentration (mg/g)')
+        axes[0,1].set_title('Differential beverage concentration vs cumulative liquid amount')
         axes[0,1].legend()
         axes[0,1].grid(True, alpha=0.3)
 

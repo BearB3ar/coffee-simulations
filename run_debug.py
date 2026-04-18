@@ -1,10 +1,14 @@
+import csv
+import gc
+import os
 import random
 import numpy as np
+import openpnm as op
 import base_realistic_run
 
 
 # Keep setup aligned with run1.py
-DOMAIN_SHAPE = [300, 300, 235]
+DOMAIN_SHAPE = [341, 341, 112]
 POROSITY = 0.44
 TEMPERATURE = 92
 PARTICLE_SIZE_DIST = "twin_lognormal"
@@ -16,6 +20,22 @@ FINE_SEED = 0
 NET_SEED = 0
 FIXED_F_FAST = 0.33
 SEARCH_SEED = 17
+
+RESULTS_CSV = "sweep_results_v2.csv"
+CSV_FIELDNAMES = [
+    "k_fast",
+    "k_slow",
+    "f_fast",
+    "c_sat",
+    "curve_score",
+    "stable_score",
+    "head_err",
+    "tail_err",
+    "yield_end",
+    "c_100g",
+    "c_250g",
+    "max_brew_mass_g",
+]
 
 # Wider bounds for a more robust initial fit sweep.
 K_FAST_BOUNDS = (0.2, 30.0)
@@ -63,6 +83,15 @@ def _param_key(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
         round(float(f_fast_val), 7),
         round(float(c_sat_val), 7),
     )
+
+
+def _append_result_csv(result):
+    write_header = not os.path.exists(RESULTS_CSV)
+    with open(RESULTS_CSV, "a", newline="") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=CSV_FIELDNAMES)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({key: result[key] for key in CSV_FIELDNAMES})
 
 
 def _build_coarse_candidates(rng):
@@ -168,6 +197,7 @@ def setup_and_run(k_fast_val, k_slow_val, f_fast_val, c_sat_val, brew_time, time
         time_steps=time_steps,
         shrink_factor=SHRINK_FACTOR,
         fines_rng_seed=FINE_SEED,
+        store_snapshots=False,
     )
 
     solute = "acids"
@@ -194,6 +224,8 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
         brew_time=BREW_TIME_S,
         time_steps=TIME_STEPS,
     )
+    op.Workspace().clear()
+    gc.collect()
 
     sim_x = run["brew_mass_g"]
     sim_y = run["c_diff_mg_g"]
@@ -233,7 +265,7 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
         yield_penalty = np.inf
     stable_score = float(score + coverage_penalty + yield_penalty)
 
-    return {
+    result = {
         "k_fast": float(k_fast_val),
         "k_slow": float(k_slow_val),
         "f_fast": float(f_fast_val),
@@ -247,6 +279,8 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
         "c_250g": float(c250) if np.isfinite(c250) else np.nan,
         "max_brew_mass_g": max_brew_mass,
     }
+    _append_result_csv(result)
+    return result
 
 
 def run_sweep():
