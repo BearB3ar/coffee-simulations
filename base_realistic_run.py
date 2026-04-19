@@ -32,6 +32,7 @@ class Simulation:
         self.porosity = porosity # Target porosity, actual porosity depends on porespy image generation + wall effect 
         self.temperature = temperature # Initial temperature
         self.particle_size_dist = particle_size_dist
+        self.control_volume_mask = None
         self.time_steps = [] # For results graphs
         self.concentrations = { # Stores concentration of the entire bed at every time step
             'acids': [],
@@ -73,8 +74,19 @@ class Simulation:
         temp_arr = np.asarray(temp_c, dtype=float)
         return np.interp(temp_arr, temps, mus, left=mus[0], right=mus[-1])
 
+    def _build_cylindrical_mask(self, shape=None):
+        if shape is None:
+            shape = self.shape
+
+        z_dim, y_dim, x_dim = shape
+        y, x = np.ogrid[:y_dim, :x_dim]
+        center_y = (y_dim - 1) / 2.0
+        center_x = (x_dim - 1) / 2.0
+        radius = min(y_dim, x_dim) / 2.0
+        radial_mask_2d = ((y - center_y) ** 2 + (x - center_x) ** 2) <= radius ** 2
+        return np.broadcast_to(radial_mask_2d, (z_dim, y_dim, x_dim)).copy()
+
     def generate_coffee_bed(self):
-        shape = self.shape
         # Approximates the grinds distribution as 2 separate lognormal curves
         if self.particle_size_dist == "twin_lognormal":
             x_axis = np.arange(0.5,100,0.5)
@@ -108,16 +120,20 @@ class Simulation:
         im = im & cone_mask"""
         
         self.im = im
+        self.control_volume_mask = self._build_cylindrical_mask(im.shape)
     
     def wall_effect(self, wall_porosity_boost=0.2, decay_width=10):
         im = self.im
-        cone_mask = self.cone_mask
+        control_volume_mask = self.control_volume_mask
+        if control_volume_mask is None or control_volume_mask.shape != im.shape:
+            control_volume_mask = self._build_cylindrical_mask(im.shape)
+            self.control_volume_mask = control_volume_mask
 
-        # Solid grounds in V60 cone
-        grounds = (im == 0) & cone_mask
+        # Solid grounds inside the active control volume
+        grounds = (im == 0) & control_volume_mask
 
-        # Distance measurer from cone_mask boundary inwards (spim is an advanced multidimensional image processor)
-        dt = spim.distance_transform_edt(cone_mask)
+        # Distance measure from cylindrical boundary inwards
+        dt = spim.distance_transform_edt(control_volume_mask)
 
         # Find spheres using spim logic rather than searching by voxels and identify their centroids
         labels, n_spheres = spim.label(grounds)
@@ -129,10 +145,10 @@ class Simulation:
             # z,y,x is order specified by spim
             z, y, x = int(center[0]), int(center[1]), int(center[2])
             
-            # Find the distance to cone_mask boundary
+            # Find the distance to cylindrical boundary
             dist = dt[z,y,x]
 
-            # Dynamic probability of removal based on exponentially decaying distance from cone_mask
+            # Dynamic probability of removal based on exponentially decaying distance from wall
             p_remove = wall_porosity_boost * np.exp(-dist / decay_width)
 
             # Remove if randomly generated probability falls within probability of removal
@@ -482,8 +498,12 @@ class Simulation:
                     else:
                         T_prev_step = phase['pore.temperature'].copy()
 
-                # Calculate actual porosity at this stage since heat capacity also needs it
-                self.actual_porosity = self.im[self.cone_mask].sum() / self.cone_mask.sum()
+                # Calculate actual porosity inside the active control volume.
+                control_volume_mask = self.control_volume_mask
+                if control_volume_mask is None or control_volume_mask.shape != self.im.shape:
+                    control_volume_mask = self._build_cylindrical_mask(self.im.shape)
+                    self.control_volume_mask = control_volume_mask
+                self.actual_porosity = self.im[control_volume_mask].sum() / control_volume_mask.sum()
 
                 # Thermal accumulation: (fluid + solid) heat capacity over dt — same unknown as T (°C).
                 vol_term_thermal = (rho_w * cp_w * pn['pore.volume'] + rho_s * cp_s * (pn['pore.volume'] * ((1-self.actual_porosity)/self.actual_porosity))) / dt
