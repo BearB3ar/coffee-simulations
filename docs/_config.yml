@@ -1,0 +1,29 @@
+title: Coffee Extraction Simulation
+description: >
+  CDE2701A aspirational project exploring pore network modelling (PNM) for
+  simulating coffee extraction, with a focus on V60 pourover brewing.
+url: "https://bearb3ar.github.io"
+baseurl: "/coffee-simulations"
+
+theme: minima
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false
+
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+header_pages:
+  - index.md
+  - overview.md
+  - methodology.md
+  - evaluation.md
+  - reflection.md
+  - references.md
+
+show_excerpts: false
+permalink: pretty
+timezone: Australia/Sydney
