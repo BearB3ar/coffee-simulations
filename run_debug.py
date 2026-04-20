@@ -21,7 +21,7 @@ NET_SEED = 0
 FIXED_F_FAST = 0.33
 SEARCH_SEED = 17
 
-RESULTS_CSV = "sweep_results_v2.csv"
+RESULTS_CSV = "sweep_results_v3.csv"
 CSV_FIELDNAMES = [
     "k_fast",
     "k_slow",
@@ -38,10 +38,10 @@ CSV_FIELDNAMES = [
 ]
 
 # Wider bounds for a more robust initial fit sweep.
-K_FAST_BOUNDS = (0.2, 30.0)
+K_FAST_BOUNDS = (0.2, 100)
 K_SLOW_BOUNDS = (0.003, 1.5)
 F_FAST_BOUNDS = (0.15, 0.85)
-C_SAT_BOUNDS = (15.0, 320.0)
+C_SAT_BOUNDS = (0.1, 100.0)
 
 COARSE_RANDOM_SAMPLES = 160
 REFINE_TOP_CANDIDATES = 6
@@ -186,7 +186,7 @@ def setup_and_run(k_fast_val, k_slow_val, f_fast_val, c_sat_val, brew_time, time
 
     wall_porosity_boost = 1.74 / (250 / (650e-6 / 1e-4) + 1.14) ** 2
     sim.generate_coffee_bed()
-    sim.wall_effect(wall_porosity_boost=wall_porosity_boost, decay_width=60)
+    #sim.wall_effect(wall_porosity_boost=wall_porosity_boost, decay_width=60)
     sim.extract_network()
     sim.add_geometry_models()
     sim.phase()
