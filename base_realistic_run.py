@@ -56,11 +56,11 @@ class Simulation:
             self.solute_classes = {
                 # TODO: Tune amount of coffee present initially and other parameters
                 'acids': {
-                    'k_fast': 10,
-                    'k_slow': 0.57,
-                    'f_fast': 0.85, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
+                    'k_fast': 30,
+                    'k_slow': 0.108429,
+                    'f_fast': 0.837191, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
                     'concentration': 15e3,
-                    'c_sat': 320,
+                    'c_sat': 15,
                 }, # Target initial mass is 2.041e-3
             }
         else:
@@ -79,9 +79,9 @@ class Simulation:
         if self.particle_size_dist == "twin_lognormal":
             x_axis = np.arange(0.5,100,0.5)
             target_peak = scipy.stats.lognorm(s=0.42, scale=(325e-6)/1e-4) # s sets the standard deviation, scale sets the median (units of voxels)
-            weight_target = 0.92 
+            weight_target = 0.7 
             fines_peak = scipy.stats.lognorm(s=0.8, scale=(50e-6)/1e-4)
-            weight_fines = 0.08
+            weight_fines = 0.3
 
             probs = (target_peak.pdf(x_axis) * weight_target) + (fines_peak.pdf(x_axis) * weight_fines) # Both curves are weighted and rebased
             probs = probs / probs.sum()
@@ -99,19 +99,21 @@ class Simulation:
 
             im = np.logical_or(im_main, im_fines).astype(int)
 
-        """# Trimming to cone geometry
+        # Trimming to cone geometry
         x,y,z = np.ogrid[0:shape[0], 0:shape[1], 0:shape[2]]
         center_y, center_x = shape[0] // 2, shape[1] // 2
         radius_at_z = -(z + 20) * np.tan(np.radians(30))
         cone_mask = ((x - center_x)**2 + (y - center_y)**2) <= radius_at_z**2
         self.cone_mask = cone_mask # Needed for porosity calculation at the end
-        im = im & cone_mask"""
+        im = im & cone_mask
         
         self.im = im
+        # Default mask for porosity accounting when cone trimming or wall effect is disabled.
+        #self.cone_mask = np.ones_like(im, dtype=bool)
     
     def wall_effect(self, wall_porosity_boost=0.2, decay_width=10):
         im = self.im
-        cone_mask = self.cone_mask
+        cone_mask = getattr(self, "cone_mask", np.ones_like(im, dtype=bool))
 
         # Solid grounds in V60 cone
         grounds = (im == 0) & cone_mask
@@ -240,7 +242,6 @@ class Simulation:
                      model=op.models.geometry.conduit_lengths.pyramids_and_cuboids,
                      pore_diameter='pore.diameter',
                      throat_diameter='throat.diameter')
-        
     def phase(self):
         pn = self.pn
         phase = op.phase.Water(network=pn)
@@ -307,7 +308,6 @@ class Simulation:
                         pore_conductivity='pore.thermal_conductivity',
                         throat_conductivity='throat.thermal_conductivity',
                         size_factors='throat.diffusive_size_factors')
-        
     def brew(self, brew_time, pour_rate, time_steps=1, shrink_factor=0.99, fines_rng_seed=None, store_snapshots=True):
         self.brew_time = brew_time
         self.pour_rate = pour_rate
@@ -361,7 +361,7 @@ class Simulation:
             inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
             outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-            inlet_pressure = 50000  # Units of Pa
+            inlet_pressure = 1000 * 9.81 * (205e-4+5e-2) + (pour_rate*1e-6/(math.pi*(2.5e-3)**2))**2/2  # Units of Pa
             
             # Initialise Stokes flow
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)
@@ -491,14 +491,6 @@ class Simulation:
                 # Heat advection–diffusion: throat "hydraulic" weight for the thermal AD problem is the
                 # volumetric conductance (m³/s) times rho*cp so inter-pore fluxes match enthalpy advection
                 # rho*cp*Q*DeltaT alongside the transient term rho*cp*V*dT/dt (plus solid storage).
-                """phase['throat.hydraulic_conductance_heat'] = phase['throat.hydraulic_conductance'] * rho_w * cp_w
-                phase['throat.ad_dif_heat_conductance'] = op.models.physics.ad_dif_conductance.ad_dif(
-                    phase,
-                    pore_pressure='pore.pressure',
-                    throat_hydraulic_conductance='throat.hydraulic_conductance_heat',
-                    throat_diffusive_conductance='throat.thermal_conductance',
-                    s_scheme='powerlaw',
-                )"""
 
                 ad_thermo.settings['conductance'] = 'throat.thermal_conductance'
 
@@ -741,11 +733,12 @@ class Simulation:
                     pn.regenerate_models()
                     phase.regenerate_models()
                     original_conductance = phase['throat.hydraulic_conductance'].copy()
-
                 # 5. Update Conductance
-                # Use original conductance so the power law scales correctly every step
+                # Use original conductance so the power law scales correctly every step.
+                # Fully-clogged throats keep a tiny residual (1e-8 of original) so the Stokes
+                # matrix never has an all-zero row, which would make it singular.
                 clogging_ratio = np.clip(phase['throat.clogged_count'] / max_throat_capacity, 0, 1)
-                phase['throat.hydraulic_conductance'] = original_conductance * (1 - clogging_ratio)**3
+                phase['throat.hydraulic_conductance'] = original_conductance * np.maximum((1 - clogging_ratio)**3, 1e-8)
 
                 # Stokes solve after fines/clogging so pressure field matches current conductances (one snapshot per step).
                 inlet_pores, outlet_pores = solve_flow(self, pour_rate)
