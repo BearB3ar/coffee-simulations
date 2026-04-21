@@ -13,7 +13,7 @@ POROSITY = 0.44
 TEMPERATURE = 92
 PARTICLE_SIZE_DIST = "twin_lognormal"
 BREW_TIME_S = 240
-POUR_RATE = 4
+POUR_RATE = 4.17
 TIME_STEPS = 120
 SHRINK_FACTOR = 1
 FINE_SEED = 0
@@ -32,8 +32,8 @@ CSV_FIELDNAMES = [
     "head_err",
     "tail_err",
     "yield_end",
-    "c_100g",
-    "c_250g",
+    "c_pot_100g",
+    "c_pot_250g",
     "max_brew_mass_g",
 ]
 
@@ -48,7 +48,7 @@ REFINE_TOP_CANDIDATES = 6
 REFINE_SAMPLES_PER_CANDIDATE = 10
 
 # Approximate digitized points from the paper's red line:
-# x = cumulative brewed mass (g), y = differential concentration (mg/g)
+# x = cumulative brewed mass (g), y = concentration (mg/g)
 TARGET_RED_POINTS = np.array([
     [0.0, 95.0],
     [20.0, 70.0],
@@ -139,7 +139,7 @@ def _build_refine_candidates(rng, best):
     return candidates
 
 
-def _compute_differential_curve(sim, solute="acids"):
+def _compute_pot_concentration_curve(sim, solute="acids"):
     time_arr = np.asarray(sim.time_steps, dtype=float)
     extracted_hist = np.asarray(sim.extracted_mass_history_by_solute.get(solute, []), dtype=float)
     n = min(len(time_arr), len(extracted_hist))
@@ -152,15 +152,13 @@ def _compute_differential_curve(sim, solute="acids"):
     retained_water_mass = 2.6 * coffee_mass
     beverage_mass_cum = np.maximum(0.0, water_passed_so_far - retained_water_mass)
 
-    # Differential concentration c_brew = d(extracted)/d(beverage), converted to mg/g.
-    d_extracted = np.diff(extracted_hist[:n], prepend=0.0)
-    d_beverage = np.diff(beverage_mass_cum, prepend=0.0)
-    c_diff = np.full(n, np.nan, dtype=float)
-    valid = d_beverage > 0
-    c_diff[valid] = 1e6 * (d_extracted[valid] / d_beverage[valid])
+    # Pot concentration = cumulative extracted / cumulative beverage, converted to mg/g.
+    c_pot = np.full(n, np.nan, dtype=float)
+    valid = beverage_mass_cum > 0
+    c_pot[valid] = 1e6 * (extracted_hist[:n][valid] / beverage_mass_cum[valid])
 
-    valid_curve = np.isfinite(c_diff)
-    return beverage_mass_cum[valid_curve], c_diff[valid_curve]
+    valid_curve = np.isfinite(c_pot)
+    return beverage_mass_cum[valid_curve], c_pot[valid_curve]
 
 
 def setup_and_run(k_fast_val, k_slow_val, f_fast_val, c_sat_val, brew_time, time_steps):
@@ -205,13 +203,13 @@ def setup_and_run(k_fast_val, k_slow_val, f_fast_val, c_sat_val, brew_time, time
     extracted_mass = sim.total_extracted_by_solute[solute]
     bean_mass = initial_extractable_mass / 0.3
     yield_val = extracted_mass / bean_mass if bean_mass > 0 else np.nan
-    brew_mass_g, c_diff_mg_g = _compute_differential_curve(sim, solute=solute)
+    brew_mass_g, c_pot_mg_g = _compute_pot_concentration_curve(sim, solute=solute)
     return {
         "yield": yield_val,
         "extracted_mass": extracted_mass,
         "initial_extractable_mass": initial_extractable_mass,
         "brew_mass_g": brew_mass_g,
-        "c_diff_mg_g": c_diff_mg_g,
+        "c_pot_mg_g": c_pot_mg_g,
     }
 
 
@@ -228,7 +226,7 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
     gc.collect()
 
     sim_x = run["brew_mass_g"]
-    sim_y = run["c_diff_mg_g"]
+    sim_y = run["c_pot_mg_g"]
     target_x = TARGET_RED_POINTS[:, 0]
     target_y = TARGET_RED_POINTS[:, 1]
 
@@ -256,14 +254,12 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
     c250 = np.interp(250.0, sim_x, sim_y) if sim_x.size >= 2 else np.nan
     max_brew_mass = float(np.max(sim_x)) if sim_x.size else 0.0
 
-    # Stabilize ranking by preferring runs that cover enough brewed mass
-    # and land near a realistic extraction yield.
-    coverage_penalty = max(0.0, 250.0 - max_brew_mass) / 25.0
+    # Stabilize ranking by preferring runs that land near a realistic extraction yield.
     if np.isfinite(run["yield"]):
         yield_penalty = max(0.0, abs(float(run["yield"]) - 0.20) - 0.03) * 120.0
     else:
         yield_penalty = np.inf
-    stable_score = float(score + coverage_penalty + yield_penalty)
+    stable_score = float(score + yield_penalty)
 
     result = {
         "k_fast": float(k_fast_val),
@@ -275,8 +271,8 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
         "head_err": float(head_err),
         "tail_err": float(tail_err),
         "yield_end": float(run["yield"]),
-        "c_100g": float(c100) if np.isfinite(c100) else np.nan,
-        "c_250g": float(c250) if np.isfinite(c250) else np.nan,
+        "c_pot_100g": float(c100) if np.isfinite(c100) else np.nan,
+        "c_pot_250g": float(c250) if np.isfinite(c250) else np.nan,
         "max_brew_mass_g": max_brew_mass,
     }
     _append_result_csv(result)
@@ -347,8 +343,8 @@ def run_sweep():
             f"k_fast={r['k_fast']:.3e}, k_slow={r['k_slow']:.3e}, "
             f"f_fast={r['f_fast']:.2f}, c_sat={r['c_sat']:.3e}, "
             f"stable_score={r['stable_score']:.3f}, curve_score={r['curve_score']:.3f}, "
-            f"yield_end={r['yield_end']:.2%}, c_100g={r['c_100g']:.2f}, "
-            f"c_250g={r['c_250g']:.2f}, max_brew_mass={r['max_brew_mass_g']:.1f}g"
+            f"yield_end={r['yield_end']:.2%}, c_pot_100g={r['c_pot_100g']:.2f}, "
+            f"c_pot_250g={r['c_pot_250g']:.2f}, max_brew_mass={r['max_brew_mass_g']:.1f}g"
         )
 
     if all_results:
