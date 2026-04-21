@@ -26,6 +26,49 @@ class Simulation:
                            80:0.0003540,
                            90:0.0003142,
                            100:0.0002816}  
+    
+    grind_size_dist = {
+        0.3: 0.2,
+        0.4: 0.2,
+        0.5: 0.2,
+        0.6: 0.2,
+        0.7: 0.2,
+        0.8: 0.2,
+        0.9: 0.2,
+        1.0: 0.2,
+        2: 0.3,
+        3: 0.4,
+        5: 0.5,
+        6: 0.5,
+        7: 0.5,
+        8: 0.6,
+        9: 0.6,
+        10: 0.7,
+        15: 1.0,
+        20: 1.4,
+        25: 1.5,
+        30: 1.4,
+        40: 1.3,
+        50: 1.1,
+        60: 1.0,
+        70: 1.0,
+        80: 0.9,
+        90: 0.8,
+        100: 0.9,
+        150: 0.7,
+        200: 1.6,
+        250: 2.3,
+        300: 4.5,
+        400: 7.0,
+        500: 7.7,
+        600: 7.4,
+        700: 6.9,
+        800: 5.5,
+        900: 4.3,
+        1000: 3.6,
+        1250: 2.0,
+        1500: 0.1 
+    }
 
     def __init__(self, domain_shape=[300,300,300], porosity = 0.46, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
         self.shape = domain_shape # Cuboidal control volume, trimming to cone shape done later (units of voxels)
@@ -59,7 +102,7 @@ class Simulation:
                     'k_fast': 30,
                     'k_slow': 0.108429,
                     'f_fast': 0.837191, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
-                    'concentration': 15e3,
+                    'concentration': 5e4,
                     'c_sat': 15,
                 }, # Target initial mass is 2.041e-3
             }
@@ -73,31 +116,31 @@ class Simulation:
         temp_arr = np.asarray(temp_c, dtype=float)
         return np.interp(temp_arr, temps, mus, left=mus[0], right=mus[-1])
 
+    def get_particle_size_distribution(self):
+        x_axis = np.arange(0.05, 100, 0.5)  # voxels
+
+        sizes_um = np.array(sorted(self.grind_size_dist.keys()), dtype=float)
+        vol_fracs = np.array([self.grind_size_dist[s] for s in sizes_um], dtype=float)
+
+        # Convert diameters from µm to voxels (1 voxel = 1e-4 m = 100 µm)
+        sizes_vox = sizes_um / 100.0
+
+        # Volume fraction → number frequency: V_f(d) ∝ N(d)·d³  ⟹  N(d) ∝ V_f(d)/d³
+        number_freq = vol_fracs / (4 * np.pi * (sizes_vox ** 3)/3)
+        number_freq /= number_freq.sum()
+
+        # Interpolate onto x_axis; zero outside the sampled range
+        probs = np.interp(x_axis, sizes_vox, number_freq, left=0.0, right=0.0)
+        probs = probs / probs.sum()
+        return x_axis, probs
+
     def generate_coffee_bed(self):
         shape = self.shape
-        # Approximates the grinds distribution as 2 separate lognormal curves
-        if self.particle_size_dist == "twin_lognormal":
-            x_axis = np.arange(0.5,100,0.5)
-            target_peak = scipy.stats.lognorm(s=0.42, scale=(325e-6)/1e-4) # s sets the standard deviation, scale sets the median (units of voxels)
-            weight_target = 0.7 
-            fines_peak = scipy.stats.lognorm(s=0.8, scale=(50e-6)/1e-4)
-            weight_fines = 0.3
+        x_axis, probs = self.get_particle_size_distribution()
+        custom_dist_object = scipy.stats.rv_discrete(name='coffee_dist', values=(x_axis, probs)) # rv_discrete creates a discretised random variable function
 
-            probs = (target_peak.pdf(x_axis) * weight_target) + (fines_peak.pdf(x_axis) * weight_fines) # Both curves are weighted and rebased
-            probs = probs / probs.sum()
-            custom_dist_object = scipy.stats.rv_discrete(name='coffee_dist', values=(x_axis, probs)) # rv_discrete creates a discretised random variable function
-
-            # porespy generates an image of pores and throats with distances between them based on the distribution of coffee particles desired and minimum radius of 0.05 voxels 
-            im = ps.generators.polydisperse_spheres(shape=self.shape, r_min=0.05, porosity=self.porosity, dist=custom_dist_object) 
-
-        # Alternative distribution method but less preferred due to clipping between images causing unrealistic geometry
-        elif self.particle_size_dist == "bimodal":
-            target_dist = scipy.stats.norm(loc=(650e-6/2)/1e-4, scale=0.5)
-            fines_dist = scipy.stats.norm(loc=(100e-6/2)/1e-4, scale=1)
-            im_main = ps.generators.polydisperse_spheres(shape=self.shape, r_min=2, porosity=self.porosity*0.9, dist=target_dist)
-            im_fines = ps.generators.polydisperse_spheres(shape=self.shape, r_min=0.5, porosity=self.porosity*0.1, dist=fines_dist)
-
-            im = np.logical_or(im_main, im_fines).astype(int)
+        # porespy generates an image of pores and throats with distances between them based on the distribution of coffee particles desired and minimum radius of 0.05 voxels
+        im = ps.generators.polydisperse_spheres(shape=self.shape, r_min=0.05, porosity=self.porosity, dist=custom_dist_object) 
 
         # Trimming to cone geometry
         x,y,z = np.ogrid[0:shape[0], 0:shape[1], 0:shape[2]]
@@ -167,7 +210,7 @@ class Simulation:
         plt.show()
     
     def extract_network(self):
-        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4, sigma=0.3, r_max=5) # resolution of 100 microns per voxel
+        snow_dict = ps.networks.snow2(self.im, voxel_size=1e-4, sigma=0.3, r_max=5) # resolution of 10 microns per voxel
         pn = op.io.network_from_porespy(snow_dict.network)
         pn['pore.diameter'] = pn['pore.inscribed_diameter']
         pn['throat.diameter'] = pn['throat.inscribed_diameter']
@@ -290,9 +333,13 @@ class Simulation:
                         conduit_lengths='throat.conduit_lengths')
 
         phase.add_model(propname='throat.diffusive_conductance',
-                       model=op.models.physics.diffusive_conductance.generic_diffusive,
+                       model=op.models.physics.diffusive_conductance.taylor_aris_diffusion,
+                       pore_area='pore.cross_sectional_area',
+                       throat_area='throat.cross_sectional_area',
                        pore_diffusivity='pore.diffusivity',
                        throat_diffusivity='throat.diffusivity',
+                       pore_pressure='pore.pressure',
+                       throat_hydraulic_conductance='throat.hydraulic_conductance',
                        size_factors='throat.diffusive_size_factors')
         
         phase.add_model(propname='throat.ad_dif_conductance',
