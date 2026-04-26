@@ -1,31 +1,62 @@
 ---
-layout: default
+layout: home
 title: Coffee Extraction Simulation
 ---
 
-# Coffee Extraction Simulation with a Pore Network Model
+## Navigate the Project
 
-This site presents my CDE2701A aspirational project: building and evaluating a pore network model (PNM) workflow for simulating coffee extraction, with a focus on V60-style pourover brewing.
-
-## Quick Links
-
-- [Project Overview](./overview.md)
-- [Implementation and Methodology](./methodology.md)
-- [Development Process and Evaluation](./evaluation.md)
-- [Personal Reflection](./reflection.md)
-- [References](./references.md)
+<div class="card-grid">
+  <div class="card">
+    <h3><a href="./overview">Project Overview</a></h3>
+    <p>Research question, background, scope, and objectives.</p>
+  </div>
+  <div class="card">
+    <h3><a href="./methodology">Methodology</a></h3>
+    <p>Simulation design, physics models, and the time-step brew workflow.</p>
+  </div>
+  <div class="card">
+    <h3><a href="./evaluation">Development &amp; Evaluation</a></h3>
+    <p>Iterative design choices, parameter tuning, and evaluation outcomes.</p>
+  </div>
+  <div class="card">
+    <h3><a href="./reflection">Personal Reflection</a></h3>
+    <p>Key lessons learned and directions for future work.</p>
+  </div>
+  <div class="card">
+    <h3><a href="./references">References</a></h3>
+    <p>Full bibliography of literature cited throughout the project.</p>
+  </div>
+</div>
 
 ## At a Glance
 
-- **Core question:** Can a PNM-based approach capture coffee extraction behavior with useful accuracy at lower computational cost?
-- **Simulation stack:** Python, OpenPNM, and PoreSpy.
-- **Physics modeled:** Hydraulic flow, thermal transport, solute extraction and transport, and fines migration effects.
-- **Target brew context:** V60 pourover geometry with configurable brew parameters.
+<div class="glance-strip">
+  <div class="glance-item">
+    <span class="glance-label">Core Question</span>
+    <span class="glance-value">Can PNM accurately simulate coffee extraction?</span>
+  </div>
+  <div class="glance-item">
+    <span class="glance-label">Language</span>
+    <span class="glance-value">Python</span>
+  </div>
+  <div class="glance-item">
+    <span class="glance-label">Libraries</span>
+    <span class="glance-value">OpenPNM &amp; PoreSpy</span>
+  </div>
+  <div class="glance-item">
+    <span class="glance-label">Brew Target</span>
+    <span class="glance-value">V60 Pourover</span>
+  </div>
+  <div class="glance-item">
+    <span class="glance-label">Physics</span>
+    <span class="glance-value">Hydraulic · Thermal · Solute · Fines</span>
+  </div>
+</div>
 
 ## Why This Project Matters
 
-Coffee extraction is a porous-media transport problem with strong practical interest and challenging multiscale physics. Existing simulation approaches can be computationally intensive or highly specialized. This project explores whether a simpler and faster PNM framework can still provide meaningful predictive power for brewing analysis and parameter tuning.
+Coffee extraction is fundamentally a porous-media transport problem. Existing simulation approaches (LBM, SPH, DPNS) are powerful but computationally intensive. This project explores whether a **Pore Network Model** — a simpler, lower-cost framework — can still deliver meaningful predictive power for brewing analysis and parameter optimisation.
 
-## Repository
+> Can PNM provide enough fidelity for coffee extraction simulation while remaining computationally efficient?
 
-- Source code and project files: [github.com/BearB3ar/coffee-simulations](https://github.com/BearB3ar/coffee-simulations)
+The results are generalised across brewing methods but focused on the V60 pourover geometry.
