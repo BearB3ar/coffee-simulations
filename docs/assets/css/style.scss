@@ -64,34 +64,34 @@
   }
 }
 
-/* ── Hero banner ────────────────────────────────────────── */
-.hero-banner {
+/* ── Landing banner (contained within wrapper) ──────────── */
+.landing-banner {
   background: linear-gradient(150deg, #1a0905 0%, #3d1c0b 55%, #2c1008 100%);
   color: #faf5ee;
   text-align: center;
-  padding: 5rem 1.5rem 4.5rem;
+  padding: 3.5rem 2rem 3rem;
+  border-radius: 10px;
+  margin-bottom: 2.5rem;
   position: relative;
   overflow: hidden;
 
-  /* Subtle radial glow */
+  /* Subtle amber radial glow */
   &::before {
     content: '';
     position: absolute;
-    top: -30%;
+    top: -20%;
     left: 50%;
     transform: translateX(-50%);
-    width: 600px;
-    height: 600px;
-    background: radial-gradient(circle, rgba(200,133,42,0.18) 0%, transparent 70%);
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle, rgba(200,133,42,0.15) 0%, transparent 70%);
     pointer-events: none;
   }
 }
 
-.hero-inner {
+.landing-banner-inner {
   position: relative;
   z-index: 1;
-  max-width: 720px;
-  margin: 0 auto;
 }
 
 .hero-eyebrow {

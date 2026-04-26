@@ -1,7 +1,25 @@
 ---
-layout: home
+layout: default
 title: Coffee Extraction Simulation
 ---
+
+<div class="landing-banner">
+  <div class="landing-banner-inner">
+    <p class="hero-eyebrow">CDE2701A &nbsp;&middot;&nbsp; Aspirational Project</p>
+    <h1 class="hero-title">Coffee Extraction Simulation</h1>
+    <p class="hero-subtitle">Pore Network Modelling for V60 Pourover Brewing</p>
+    <p class="hero-tagline">
+      Evaluating whether a PNM-based framework can capture coffee extraction
+      physics accurately — as a low-cost alternative to direct pore-scale
+      numerical simulations.
+    </p>
+    <div class="hero-actions">
+      <a href="https://github.com/BearB3ar/coffee-simulations"
+         class="hero-btn" target="_blank" rel="noopener">&#9733; View on GitHub</a>
+      <a href="./overview" class="hero-btn hero-btn-outline">Read the Report &rarr;</a>
+    </div>
+  </div>
+</div>
 
 ## Navigate the Project
 
@@ -49,7 +67,7 @@ title: Coffee Extraction Simulation
   </div>
   <div class="glance-item">
     <span class="glance-label">Physics</span>
-    <span class="glance-value">Hydraulic · Thermal · Solute · Fines</span>
+    <span class="glance-value">Hydraulic &middot; Thermal &middot; Solute &middot; Fines</span>
   </div>
 </div>
 
