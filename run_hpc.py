@@ -31,10 +31,9 @@ matplotlib.use("Agg")
 
 
 # Keep setup aligned with run1.py / run_debug.py
-DOMAIN_SHAPE = [341, 341, 112]
+DOMAIN_SHAPE = [562, 562, 112]
 POROSITY = 0.44
 TEMPERATURE = 92
-PARTICLE_SIZE_DIST = "twin_lognormal"
 BREW_TIME_S = 240
 POUR_RATE = 4.17
 TIME_STEPS = 120
@@ -200,7 +199,6 @@ def setup_and_run(k_fast_val, k_slow_val, f_fast_val, c_sat_val, brew_time, time
         domain_shape=DOMAIN_SHAPE,
         porosity=POROSITY,
         temperature=TEMPERATURE,
-        particle_size_dist=PARTICLE_SIZE_DIST,
         solute_classes=solute_cfg,
     )
 

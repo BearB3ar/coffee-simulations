@@ -70,11 +70,10 @@ class Simulation:
         1500: 0.1 
     }
 
-    def __init__(self, domain_shape=[300,300,300], porosity = 0.46, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
+    def __init__(self, domain_shape=[300,300,300], porosity = 0.46, temperature = 95, solute_classes=None):
         self.shape = domain_shape # Cuboidal control volume, trimming to cone shape done later (units of voxels)
         self.porosity = porosity # Target porosity, actual porosity depends on porespy image generation + wall effect 
         self.temperature = temperature # Initial temperature
-        self.particle_size_dist = particle_size_dist
         self.time_steps = [] # For results graphs
         self.concentrations = { # Stores concentration of the entire bed at every time step
             'acids': [],
@@ -102,7 +101,7 @@ class Simulation:
                     'k_fast': 30,
                     'k_slow': 0.108429,
                     'f_fast': 0.837191, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
-                    'concentration': 5e4,
+                    'concentration': 9.5e3,
                     'c_sat': 15,
                 }, # Target initial mass is 2.041e-3
             }
