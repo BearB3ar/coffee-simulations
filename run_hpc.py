@@ -34,7 +34,7 @@ matplotlib.use("Agg")
 DOMAIN_SHAPE = [562, 562, 112]
 POROSITY = 0.44
 TEMPERATURE = 92
-BREW_TIME_S = 240
+BREW_TIME_S = 120
 POUR_RATE = 4.17
 TIME_STEPS = 120
 SHRINK_FACTOR = 1
@@ -76,11 +76,16 @@ TARGET_RED_POINTS = np.array([
     [20.0, 70.0],
     [40.0, 50.0],
     [60.0, 40.0],
+    [80.0, 30.0],
     [100.0, 28.0],
+    [120.0, 22.0],
     [150.0, 20.0],
-    [200.0, 15.0],
-    [250.0, 12.0],
-    [300.0, 10.0],
+    [170.0, 18.0],
+    [190.0, 15.0],
+    [210.0, 13.0],
+    [240.0, 12.0],
+    [260.0, 11.0],
+    [280.0, 10.0],
 ], dtype=float)
 
 
@@ -272,9 +277,9 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
     c250 = np.interp(250.0, sim_x, sim_y) if sim_x.size >= 2 else np.nan
     max_brew_mass = float(np.max(sim_x)) if sim_x.size else 0.0
 
-    # Stabilize ranking by preferring runs that land near a realistic extraction yield.
+    # Stabilize ranking by preferring runs that land near a realistic extraction yield. (0.27-0.33)
     if np.isfinite(run["yield"]):
-        yield_penalty = max(0.0, abs(float(run["yield"]) - 0.20) - 0.03) * 120.0
+        yield_penalty = max(0.0, abs(float(run["yield"]) - 0.30) - 0.03) * 120.0
     else:
         yield_penalty = np.inf
     stable_score = float(score + yield_penalty)
