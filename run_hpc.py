@@ -279,7 +279,7 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
 
     # Stabilize ranking by preferring runs that land near a realistic extraction yield. (0.27-0.33)
     if np.isfinite(run["yield"]):
-        yield_penalty = max(0.0, abs(float(run["yield"]) - 0.30) - 0.03) * 120.0
+        yield_penalty = max(0.0, abs(float(run["yield"]) - 0.30) - 0.03) * 1200.0
     else:
         yield_penalty = np.inf
     stable_score = float(score + yield_penalty)
@@ -302,12 +302,28 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
 
 def _worker(params):
     k_fast_val, k_slow_val, f_fast_val, c_sat_val = params
-    return evaluate_pair(
-        k_fast_val=k_fast_val,
-        k_slow_val=k_slow_val,
-        f_fast_val=f_fast_val,
-        c_sat_val=c_sat_val,
-    )
+    try:
+        return evaluate_pair(
+            k_fast_val=k_fast_val,
+            k_slow_val=k_slow_val,
+            f_fast_val=f_fast_val,
+            c_sat_val=c_sat_val,
+        )
+    except:
+        return {
+        "k_fast": float(k_fast_val),
+        "k_slow": float(k_slow_val),
+        "f_fast": float(f_fast_val),
+        "c_sat": float(c_sat_val),
+        "curve_score": 1000,
+        "stable_score": 1000,
+        "head_err": float(1000),
+        "tail_err": float(1000),
+        "yield_end": float(0),
+        "c_pot_100g": 1000,
+        "c_pot_250g": 1000,
+        "max_brew_mass_g": 0,
+    }
 
 
 def _evaluate_parallel(candidates, n_workers, stage_name):
