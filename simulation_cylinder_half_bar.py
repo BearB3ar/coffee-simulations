@@ -92,6 +92,7 @@ class Simulation:
         self.total_extracted = 0.0 # Cumulative measure for how much solute leaves outlet_pores
         self.total_extracted_by_solute = {}
         self.extracted_mass_history_by_solute = {}
+        self.exit_concentration_history_by_solute = {}
         self.initial_extractable_mass_by_solute = {}
         self.yield_by_solute = {}
         if solute_classes is None:
@@ -141,17 +142,17 @@ class Simulation:
         # porespy generates an image of pores and throats with distances between them based on the distribution of coffee particles desired and minimum radius of 0.05 voxels
         im = ps.generators.polydisperse_spheres(shape=self.shape, r_min=0.05, porosity=self.porosity, dist=custom_dist_object) 
 
-        """# Trimming to cone geometry
+        # Trimming to cone geometry
         x,y,z = np.ogrid[0:shape[0], 0:shape[1], 0:shape[2]]
         center_y, center_x = shape[0] // 2, shape[1] // 2
-        radius_at_z = -(z + 20) * np.tan(np.radians(30))
+        radius_at_z = -(z + 18) * np.tan(np.radians(30))
         cone_mask = ((x - center_x)**2 + (y - center_y)**2) <= radius_at_z**2
         self.cone_mask = cone_mask # Needed for porosity calculation at the end
-        im = im & cone_mask"""
+        im = im & cone_mask
         
         self.im = im
         # Default mask for porosity accounting when cone trimming or wall effect is disabled.
-        self.cone_mask = np.ones_like(im, dtype=bool)
+        #self.cone_mask = np.ones_like(im, dtype=bool)
     
     def wall_effect(self, wall_porosity_boost=0.2, decay_width=10):
         im = self.im
@@ -407,7 +408,7 @@ class Simulation:
             inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
             outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-            inlet_pressure = 50000  # Units of Pa
+            inlet_pressure = 1000 * 9.81 * (-20e-4 + self.domain_shape[2] * 10**(-2))  # Units of Pa
             
             # Initialise Stokes flow
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)
@@ -456,6 +457,7 @@ class Simulation:
             self.total_extracted = 0.0
             self.total_extracted_by_solute[solute_name] = 0.0
             self.extracted_mass_history_by_solute[solute_name] = []
+            self.exit_concentration_history_by_solute[solute_name] = []
             self.yield_by_solute[solute_name] = 0.0
 
             # Use as switches for swelling and temperature variation
@@ -671,6 +673,11 @@ class Simulation:
 
                 # Update for next time step
                 ad['pore.concentration'] = C_new.copy() # Concentration in each pore
+
+                vol_out = pn['pore.volume'][outlet_pores]
+                c_out = C_new[outlet_pores]
+                c_exit = float(np.average(c_out, weights=vol_out))
+                self.exit_concentration_history_by_solute[solute_name].append(c_exit)
 
                 # Update remaining solute and ensure extraction does not exceed available
                 driving_force = np.maximum(0, params['c_sat'] - C_new)

@@ -1,6 +1,9 @@
 """
 HPC-ready parameter sweep for the coffee extraction simulation.
 
+Scores each parameter set against brewer-exit concentration (kg/m³) vs time (s),
+using volume-weighted mean C at outlet pores from the simulation.
+
 This script is a parallelized variant of `run_debug.py` intended for shared-memory
 multi-core execution (single node) on HPC systems.
 
@@ -31,10 +34,10 @@ matplotlib.use("Agg")
 
 
 # Keep setup aligned with run1.py / run_debug.py
-DOMAIN_SHAPE = [562, 562, 112]
+DOMAIN_SHAPE = [915, 915, 793]
 POROSITY = 0.44
 TEMPERATURE = 92
-BREW_TIME_S = 120
+BREW_TIME_S = 160
 POUR_RATE = 4.17
 TIME_STEPS = 120
 SHRINK_FACTOR = 1
@@ -54,9 +57,9 @@ CSV_FIELDNAMES = [
     "head_err",
     "tail_err",
     "yield_end",
-    "c_pot_100g",
-    "c_pot_250g",
-    "max_brew_mass_g",
+    "c_exit_60s",
+    "c_exit_120s",
+    "brew_time_end_s",
 ]
 
 # Wider bounds for a more robust initial fit sweep.
@@ -69,23 +72,24 @@ COARSE_RANDOM_SAMPLES = 160
 REFINE_TOP_CANDIDATES = 6
 REFINE_SAMPLES_PER_CANDIDATE = 10
 
-# Approximate digitized points from the paper's red line:
-# x = cumulative brewed mass (g), y = concentration (mg/g)
-TARGET_RED_POINTS = np.array([
-    [0.0, 95.0],
-    [20.0, 70.0],
-    [40.0, 50.0],
-    [60.0, 40.0],
-    [80.0, 30.0],
-    [100.0, 28.0],
-    [120.0, 22.0],
-    [150.0, 20.0],
-    [170.0, 18.0],
-    [190.0, 15.0],
-    [210.0, 13.0],
-    [240.0, 12.0],
-    [260.0, 11.0],
-    [280.0, 10.0],
+# Placeholder until experimental (time_s, c_kg_m3) points are supplied.
+TARGET_EXIT_POINTS = np.array([
+    [5.0, 195.0],
+    [10.0, 150.0],
+    [15.0, 100.0],
+    [20.0, 60.0],
+    [25.0, 40.0],
+    [30.0, 25.0],
+    [40.0, 20.0],
+    [50.0, 15.0],
+    [60.0, 10.0],
+    [70.0, 8.0],
+    [80.0, 7.0],
+    [90.0, 6.0],
+    [100.0, 5.0],
+    [125.0, 3.0],
+    [150.0, 1.0],
+    [160.0, 0.0]
 ], dtype=float)
 
 
@@ -165,26 +169,15 @@ def _build_refine_candidates(rng, best):
     return candidates
 
 
-def _compute_pot_concentration_curve(sim, solute="acids"):
+def _compute_exit_concentration_curve(sim, solute="acids"):
     time_arr = np.asarray(sim.time_steps, dtype=float)
-    extracted_hist = np.asarray(sim.extracted_mass_history_by_solute.get(solute, []), dtype=float)
-    n = min(len(time_arr), len(extracted_hist))
+    c_exit = np.asarray(
+        sim.exit_concentration_history_by_solute.get(solute, []), dtype=float
+    )
+    n = min(len(time_arr), len(c_exit))
     if n == 0:
         return np.array([]), np.array([])
-
-    # Brewed water mass in grams.
-    water_passed_so_far = sim.pour_rate * 1e-6 * 1e6 * time_arr[:n]
-    coffee_mass = sim.initial_extractable_mass_by_solute[solute] * 1000.0 / 0.3
-    retained_water_mass = 2.6 * coffee_mass
-    beverage_mass_cum = np.maximum(0.0, water_passed_so_far - retained_water_mass)
-
-    # Pot concentration = cumulative extracted / cumulative beverage, converted to mg/g.
-    c_pot = np.full(n, np.nan, dtype=float)
-    valid = beverage_mass_cum > 0
-    c_pot[valid] = 1e6 * (extracted_hist[:n][valid] / beverage_mass_cum[valid])
-
-    valid_curve = np.isfinite(c_pot)
-    return beverage_mass_cum[valid_curve], c_pot[valid_curve]
+    return time_arr[:n], c_exit[:n]
 
 
 def setup_and_run(k_fast_val, k_slow_val, f_fast_val, c_sat_val, brew_time, time_steps):
@@ -226,13 +219,13 @@ def setup_and_run(k_fast_val, k_slow_val, f_fast_val, c_sat_val, brew_time, time
     extracted_mass = sim.total_extracted_by_solute[solute]
     bean_mass = initial_extractable_mass / 0.3
     yield_val = extracted_mass / bean_mass if bean_mass > 0 else np.nan
-    brew_mass_g, c_pot_mg_g = _compute_pot_concentration_curve(sim, solute=solute)
+    time_s, c_exit_kg_m3 = _compute_exit_concentration_curve(sim, solute=solute)
     return {
         "yield": yield_val,
         "extracted_mass": extracted_mass,
         "initial_extractable_mass": initial_extractable_mass,
-        "brew_mass_g": brew_mass_g,
-        "c_pot_mg_g": c_pot_mg_g,
+        "time_s": time_s,
+        "c_exit_kg_m3": c_exit_kg_m3,
     }
 
 
@@ -248,20 +241,28 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
     op.Workspace().clear()
     gc.collect()
 
-    sim_x = run["brew_mass_g"]
-    sim_y = run["c_pot_mg_g"]
-    target_x = TARGET_RED_POINTS[:, 0]
-    target_y = TARGET_RED_POINTS[:, 1]
+    sim_x = run["time_s"]
+    sim_y = run["c_exit_kg_m3"]
+    target_x = TARGET_EXIT_POINTS[:, 0]
+    target_y = TARGET_EXIT_POINTS[:, 1]
 
     valid_domain = target_x <= float(np.max(sim_x)) if sim_x.size else np.zeros_like(target_x, dtype=bool)
-    if sim_x.size < 2 or sim_y.size < 2 or np.sum(valid_domain) < 3:
+    y_ref = target_y[valid_domain]
+    finite_ref = np.isfinite(y_ref)
+    if (
+        sim_x.size < 2
+        or sim_y.size < 2
+        or np.sum(valid_domain) < 3
+        or np.sum(finite_ref) < 3
+    ):
         score = np.inf
         head_err = np.inf
         tail_err = np.inf
     else:
         interp_vals = np.interp(target_x[valid_domain], sim_x, sim_y)
-        y_ref = target_y[valid_domain]
-        core_rmse = _rmse(interp_vals, y_ref)
+        y_ref_finite = y_ref[finite_ref]
+        interp_finite = interp_vals[finite_ref]
+        core_rmse = _rmse(interp_finite, y_ref_finite)
         head_err = abs(float(interp_vals[0]) - float(y_ref[0]))
         tail_err = abs(float(interp_vals[-1]) - float(y_ref[-1]))
         score = 0.5 * core_rmse + 0.3 * head_err + 0.2 * tail_err
@@ -273,9 +274,9 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
         f"yield_end={run['yield']:.2%}",
         flush=True,
     )
-    c100 = np.interp(100.0, sim_x, sim_y) if sim_x.size >= 2 else np.nan
-    c250 = np.interp(250.0, sim_x, sim_y) if sim_x.size >= 2 else np.nan
-    max_brew_mass = float(np.max(sim_x)) if sim_x.size else 0.0
+    c60 = np.interp(60.0, sim_x, sim_y) if sim_x.size >= 2 else np.nan
+    c120 = np.interp(120.0, sim_x, sim_y) if sim_x.size >= 2 else np.nan
+    brew_time_end = float(np.max(sim_x)) if sim_x.size else 0.0
 
     # Stabilize ranking by preferring runs that land near a realistic extraction yield. (0.27-0.33)
     if np.isfinite(run["yield"]):
@@ -294,9 +295,9 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
         "head_err": float(head_err),
         "tail_err": float(tail_err),
         "yield_end": float(run["yield"]),
-        "c_pot_100g": float(c100) if np.isfinite(c100) else np.nan,
-        "c_pot_250g": float(c250) if np.isfinite(c250) else np.nan,
-        "max_brew_mass_g": max_brew_mass,
+        "c_exit_60s": float(c60) if np.isfinite(c60) else np.nan,
+        "c_exit_120s": float(c120) if np.isfinite(c120) else np.nan,
+        "brew_time_end_s": brew_time_end,
     }
 
 
@@ -320,9 +321,9 @@ def _worker(params):
         "head_err": float(1000),
         "tail_err": float(1000),
         "yield_end": float(0),
-        "c_pot_100g": 1000,
-        "c_pot_250g": 1000,
-        "max_brew_mass_g": 0,
+        "c_exit_60s": 1000,
+        "c_exit_120s": 1000,
+        "brew_time_end_s": 0,
     }
 
 
@@ -406,8 +407,8 @@ def run_sweep(n_workers, output_csv):
             f"k_fast={r['k_fast']:.3e}, k_slow={r['k_slow']:.3e}, "
             f"f_fast={r['f_fast']:.2f}, c_sat={r['c_sat']:.3e}, "
             f"stable_score={r['stable_score']:.3f}, curve_score={r['curve_score']:.3f}, "
-            f"yield_end={r['yield_end']:.2%}, c_pot_100g={r['c_pot_100g']:.2f}, "
-            f"c_pot_250g={r['c_pot_250g']:.2f}, max_brew_mass={r['max_brew_mass_g']:.1f}g",
+            f"yield_end={r['yield_end']:.2%}, c_exit_60s={r['c_exit_60s']:.2f}, "
+            f"c_exit_120s={r['c_exit_120s']:.2f}, brew_time_end={r['brew_time_end_s']:.1f}s",
             flush=True,
         )
 
