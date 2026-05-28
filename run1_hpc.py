@@ -1,6 +1,4 @@
 import base_realistic_run 
-import pyvista as pv
-pv.start_xvfb() # Start virtual framebuffer for pyvista rendering in HPC environments
 
 sim = base_realistic_run.Simulation(
     # Full V60 size is approximately [500,500,410]
@@ -32,5 +30,5 @@ sim.brew(
 sim.generate_brewing_animation()
 sim.generate_pressure_animation()
 sim.generate_temperature_animation()
-sim.plot_results()
+#sim.plot_results()
 sim.print_statistics()
