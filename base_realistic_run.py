@@ -70,11 +70,10 @@ class Simulation:
         1500: 0.1 
     }
 
-    def __init__(self, domain_shape=[300,300,300], porosity = 0.46, temperature = 95, particle_size_dist = 'twin_lognormal', solute_classes=None):
+    def __init__(self, domain_shape=[300,300,300], porosity = 0.46, temperature = 95, solute_classes=None):
         self.shape = domain_shape # Cuboidal control volume, trimming to cone shape done later (units of voxels)
         self.porosity = porosity # Target porosity, actual porosity depends on porespy image generation + wall effect 
         self.temperature = temperature # Initial temperature
-        self.particle_size_dist = particle_size_dist
         self.time_steps = [] # For results graphs
         self.concentrations = { # Stores concentration of the entire bed at every time step
             'acids': [],
@@ -90,6 +89,7 @@ class Simulation:
             "unclipped": []
         }
         self.pressures = []  # Filled in brew(): one snapshot per step after fines + Stokes (see generate_pressure_animation)
+        self.velocities = []
         self.total_extracted = 0.0 # Cumulative measure for how much solute leaves outlet_pores
         self.total_extracted_by_solute = {}
         self.extracted_mass_history_by_solute = {}
@@ -99,11 +99,11 @@ class Simulation:
             self.solute_classes = {
                 # TODO: Tune amount of coffee present initially and other parameters
                 'acids': {
-                    'k_fast': 30,
-                    'k_slow': 0.108429,
-                    'f_fast': 0.837191, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
-                    'concentration': 5e4,
-                    'c_sat': 15,
+                    'k_fast': 0.5,
+                    'k_slow': 0.02,
+                    'f_fast': 0.25, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
+                    'concentration': 28e3,
+                    'c_sat': 30,
                 }, # Target initial mass is 2.041e-3
             }
         else:
@@ -153,6 +153,36 @@ class Simulation:
         self.im = im
         # Default mask for porosity accounting when cone trimming or wall effect is disabled.
         #self.cone_mask = np.ones_like(im, dtype=bool)
+
+    def plot_size_distribution_line(self, n_bins=40):
+        """Plot the particle size distribution used to generate the coffee bed."""
+
+        def _smooth_curve(values, sigma_bins=0.5):
+            radius = int(np.ceil(4 * sigma_bins))
+            x = np.arange(-radius, radius + 1, dtype=float)
+            kernel = np.exp(-0.5 * (x / sigma_bins) ** 2)
+            kernel /= np.sum(kernel)
+            return np.convolve(values, kernel, mode="same")
+
+        x_axis, probs = self.get_particle_size_distribution()
+        size_um = x_axis * 100.0
+
+        # Weight by sphere volume (∝ r³) to convert number distribution → volume fraction.
+        # This is purely analytical; no 3-D image data is needed.
+        volume_weights = probs * x_axis ** 3
+        volume_frac = volume_weights / volume_weights.sum()
+        smoothed = _smooth_curve(volume_frac)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(size_um, 100.0 * smoothed, linewidth=2.5, color="blue", label="Particles")
+        ax.set_xscale("log")
+        ax.set_xlabel("Particle diameter (microns)")
+        ax.set_ylabel("Volume fraction (%)")
+        ax.set_title("Coffee particle size distribution")
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        plt.show()
     
     def wall_effect(self, wall_porosity_boost=0.2, decay_width=10):
         im = self.im
@@ -408,7 +438,7 @@ class Simulation:
             inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
             outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-            inlet_pressure = 1000 * 9.81 * (205e-4+5e-2) + (pour_rate*1e-6/(math.pi*(2.5e-3)**2))**2/2  # Units of Pa
+            inlet_pressure = 1000 * 9.81 * (-20e-4+6e-2) # Units of Pa
             
             # Initialise Stokes flow
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)
@@ -427,6 +457,28 @@ class Simulation:
             phase['pore.pressure'] = flow['pore.pressure']
             phase['throat.hydraulic_flow'] = flow.rate(throats=pn.Ts, mode='throat')
             self.flow = flow
+
+            # 1. Get scalar throat velocities (rate / cross-sectional area)
+            throat_rates = flow.rate(throats=self.pn.Ts)
+            throat_velocities = throat_rates / self.pn['throat.cross_sectional_area']
+
+            # 2. Convert scalar throat velocities to vectors
+            conduit_vectors = self.pn['pore.coords'][self.pn['throat.conns'][:, 1]] - self.pn['pore.coords'][self.pn['throat.conns'][:, 0]]
+            unit_vectors = conduit_vectors / np.linalg.norm(conduit_vectors, axis=1)[:, None]
+            throat_velocity_vectors = unit_vectors * throat_velocities[:, None]
+
+            # 3. Average throat vectors to the connected pores to get pore velocity vectors
+            pore_velocity_vectors = np.zeros((self.pn.Np, 3))
+            for d in range(3):
+                # Mapping throat values back to pores
+                np.add.at(pore_velocity_vectors[:, d], self.pn['throat.conns'][:, 0], throat_velocity_vectors[:, d])
+                np.add.at(pore_velocity_vectors[:, d], self.pn['throat.conns'][:, 1], -throat_velocity_vectors[:, d])
+
+            # Normalize by coordination number (how many throats connect to each pore)
+            coordination_num = np.bincount(self.pn['throat.conns'].flatten(), minlength=self.pn.Np)
+            pore_velocity_vectors /= np.maximum(coordination_num, 1)[:, None]
+
+            self.velocities.append(pore_velocity_vectors)
 
             # Recursively finds conductance based on actual flow
             phase.regenerate_models(propnames=['throat.ad_dif_conductance'])
@@ -892,6 +944,108 @@ class Simulation:
         ani = FuncAnimation(fig, update, frames=n_frames, interval=interval, blit=True)
         ani.save(save_path, writer='pillow')
 
+    def generate_velocity_animation(self, save_path='coffee_velocity.gif', interval=50, quiver_step=5):
+        """
+        Animate pore velocity field on the same (y, z) slice grid.
+        Displays velocity magnitude as a heatmap and direction via quiver arrows.
+        
+        Assumes self.velocities is a list of arrays of shape (n_pores, 3) 
+        representing [vx, vy, vz] at each time step.
+        """
+        n_frames = len(self.velocities)
+        if n_frames == 0:
+            raise RuntimeError("No velocity snapshots; run brew() first.")
+
+        coords = self.pn['pore.coords']
+        y = coords[:, 1]
+        z = coords[:, 2]
+
+        # Define the interpolation grid
+        xi = np.linspace(y.min(), y.max(), 100)
+        zi = np.linspace(z.min(), z.max(), 100)
+        xi, zi = np.meshgrid(xi, zi)
+
+        # Calculate magnitudes for the (y, z) plane to scale the colorbar
+        mags = [np.linalg.norm(v[:, 1:], axis=1) for v in self.velocities]
+        
+        v_min = min(float(np.min(m)) for m in mags)
+        v_max = max(float(np.max(m)) for m in mags)
+        if not np.isfinite(v_min) or not np.isfinite(v_max) or v_max <= v_min:
+            v_max = v_min + 1e-6  # small offset to prevent division by zero in cmap
+
+        # Initial frame data setup
+        V0 = self.velocities[0]
+        Vy0 = V0[:, 1]
+        Vz0 = V0[:, 2]
+        V_mag0 = mags[0]
+
+        # Interpolate magnitude and vector components onto the grid
+        grid_mag = griddata((y, z), V_mag0, (xi, zi), method='linear', fill_value=0)
+        grid_Vy = griddata((y, z), Vy0, (xi, zi), method='linear', fill_value=0)
+        grid_Vz = griddata((y, z), Vz0, (xi, zi), method='linear', fill_value=0)
+
+        fig, ax = plt.subplots(figsize=(6, 8))
+        
+        # 1. Plot the velocity magnitude as the background heatmap
+        im = ax.imshow(
+            grid_mag,
+            extent=(y.min(), y.max(), z.min(), z.max()),
+            origin='lower',
+            aspect='auto',
+            cmap='plasma', # Using plasma to contrast with viridis used in pressure
+            vmin=v_min,
+            vmax=v_max,
+        )
+        plt.colorbar(im, label='Velocity Magnitude [m/s]')
+
+        # 2. Plot the vector arrows (subsampled for visual clarity)
+        # We slice the grid using [::step, ::step] to reduce arrow clutter
+        Q = ax.quiver(
+            xi[::quiver_step, ::quiver_step], 
+            zi[::quiver_step, ::quiver_step], 
+            grid_Vy[::quiver_step, ::quiver_step], 
+            grid_Vz[::quiver_step, ::quiver_step],
+            color='white',
+            pivot='middle',
+            scale_units='xy'
+        )
+
+        ax.set_title('Velocity Flow Field')
+        ax.set_xlabel('Width [m]')
+        ax.set_ylabel('Bed depth [m]')
+
+        use_time = len(self.time_steps) == n_frames
+
+        def update(frame):
+            V = self.velocities[frame]
+            Vy = V[:, 1]
+            Vz = V[:, 2]
+            V_mag = mags[frame]
+
+            # Re-interpolate for the current frame
+            grid_mag = griddata((y, z), V_mag, (xi, zi), method='linear', fill_value=0)
+            grid_Vy = griddata((y, z), Vy, (xi, zi), method='linear', fill_value=0)
+            grid_Vz = griddata((y, z), Vz, (xi, zi), method='linear', fill_value=0)
+
+            # Update heatmap
+            im.set_array(grid_mag)
+            
+            # Update Quiver plot
+            Q.set_UVC(
+                grid_Vy[::quiver_step, ::quiver_step], 
+                grid_Vz[::quiver_step, ::quiver_step]
+            )
+
+            if use_time:
+                ax.set_title(f't = {self.time_steps[frame]:.1f} s  |  step {frame}')
+            else:
+                ax.set_title(f'Velocity Flow Field  |  step {frame}')
+                
+            return [im, Q]
+
+        ani = FuncAnimation(fig, update, frames=n_frames, interval=interval, blit=False)
+        ani.save(save_path, writer='pillow')
+
     def generate_temperature_animation(self, save_path='temperature_debug.gif', interval=50):
         """
         Side-by-side animation of pore temperature heatmaps:
@@ -1098,7 +1252,7 @@ class Simulation:
         print(f"\nBrewing Progress:")
         print(f"  Total brew time: {self.time_steps[-1]:.1f}s")
         rt = np.inf if Q_total <= 0 else (V_total / Q_total)
-        print(f"Corrected Residence Time: {rt} seconds")
+        print(f"Corrected Residence Time: {rt:.2f} seconds")
         if self.concentrations:
             for solute in self.solute_classes.keys():
                 print(f" {solute} statistics:")
