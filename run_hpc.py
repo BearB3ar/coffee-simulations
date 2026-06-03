@@ -22,6 +22,7 @@ import gc
 import multiprocessing as mp
 import os
 import random
+import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import matplotlib
@@ -60,6 +61,9 @@ CSV_FIELDNAMES = [
     "c_exit_60s",
     "c_exit_120s",
     "brew_time_end_s",
+    "worker_error_type",
+    "worker_error_message",
+    "worker_traceback",
 ]
 
 # Wider bounds for a more robust initial fit sweep.
@@ -298,6 +302,9 @@ def evaluate_pair(k_fast_val, k_slow_val, f_fast_val, c_sat_val):
         "c_exit_60s": float(c60) if np.isfinite(c60) else np.nan,
         "c_exit_120s": float(c120) if np.isfinite(c120) else np.nan,
         "brew_time_end_s": brew_time_end,
+        "worker_error_type": "",
+        "worker_error_message": "",
+        "worker_traceback": "",
     }
 
 
@@ -310,7 +317,18 @@ def _worker(params):
             f_fast_val=f_fast_val,
             c_sat_val=c_sat_val,
         )
-    except:
+    except Exception as exc:
+        tb_str = traceback.format_exc()
+        print(
+            "[worker-error] "
+            f"k_fast={float(k_fast_val):.3e}, "
+            f"k_slow={float(k_slow_val):.3e}, "
+            f"f_fast={float(f_fast_val):.2f}, "
+            f"c_sat={float(c_sat_val):.3e}, "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        print(tb_str, flush=True)
         return {
         "k_fast": float(k_fast_val),
         "k_slow": float(k_slow_val),
@@ -324,6 +342,9 @@ def _worker(params):
         "c_exit_60s": 1000,
         "c_exit_120s": 1000,
         "brew_time_end_s": 0,
+        "worker_error_type": type(exc).__name__,
+        "worker_error_message": str(exc),
+        "worker_traceback": tb_str.strip(),
     }
 
 

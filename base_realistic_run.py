@@ -102,7 +102,7 @@ class Simulation:
                     'k_fast': 0.5,
                     'k_slow': 0.02,
                     'f_fast': 0.25, # Fraction of initial mass that is in the fast-extracting class vs slow-extracting class; this is a simple way to capture the common observation of a fast initial extraction followed by slower extraction later on
-                    'concentration': 28e3,
+                    'concentration': 8.4e3,
                     'c_sat': 30,
                 }, # Target initial mass is 2.041e-3
             }
@@ -438,7 +438,7 @@ class Simulation:
             inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
             outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-            inlet_pressure = 1000 * 9.81 * (-20e-4+6e-2) # Units of Pa
+            inlet_pressure = 1000 * 9.81 * (-20e-4 + self.shape[2] * 10**(-4)) # Units of Pa
             
             # Initialise Stokes flow
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)

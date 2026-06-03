@@ -408,7 +408,7 @@ class Simulation:
             inlet_pores = pn.pores()[coords[:, 2] >= coords[:, 2].max() - tol]
             outlet_pores = pn.pores()[coords[:, 2] <= coords[:, 2].min() + tol]
 
-            inlet_pressure = 1000 * 9.81 * (-20e-4 + self.domain_shape[2] * 10**(-2))  # Units of Pa
+            inlet_pressure = 1000 * 9.81 * (-20e-4 + self.shape[2] * 10**(-4))  # Units of Pa
             
             # Initialise Stokes flow
             flow = op.algorithms.StokesFlow(network=pn, phase=phase)
