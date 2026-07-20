@@ -632,6 +632,8 @@ class Simulation:
                 ad._build_b()
                 ad._apply_BCs()
 
+                vol_term = pn['pore.volume'] / dt
+
                 # Extraction linearization Y = A1*C + A2 (same kinetics as post-step mass update).
                 remaining_fast = np.divide(
                     phase[f'pore.{solute_name}_available_fast'],
@@ -653,9 +655,9 @@ class Simulation:
                 A2_eff = A2.copy()
                 A1_eff[inlet_pores] = 0.0
                 A2_eff[inlet_pores] = 0.0
-                M_source = spdiags(data=-A1_eff, diags=0, m=pn.Np, n=pn.Np)
+                M_source = spdiags(data=vol_term-A1_eff, diags=0, m=pn.Np, n=pn.Np)
                 A_mat = ad.A + M_source
-                b_vec = ad.b + A2_eff
+                b_vec = ad.b + A2_eff + vol_term * ad['pore.concentration']
                 
                 """# Error handling for 0 on the diagonals 
                 diagonals = A_mat.diagonal() 
