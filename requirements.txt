@@ -1,8 +1,0 @@
-numpy=2.2.6
-porespy=2.4.3
-openpnm=3.5.2
-matplotlib=3.10.7
-scipy=1.15.3
-pypardiso=0.4.7
-python=3.10.19
-pyvista=0.48.0

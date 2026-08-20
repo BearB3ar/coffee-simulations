@@ -1,0 +1,15 @@
+#!/bin/bash
+#PBS -P Coffee_sim_refine_array
+#PBS -N 4_Refine_Array
+#PBS -q parallel
+#PBS -l select=1:ncpus=24:mem=96gb
+#PBS -l walltime=15:00:00
+#PBS -J 1-5
+
+cd "$PBS_O_WORKDIR"
+
+source ~/miniforge3/etc/profile.d/conda.sh
+
+conda activate pnm
+
+python run_hpc_chunked_sweep.py --mode run_chunk --task_file refine_tasks.csv --output_prefix refine_results --num_chunks 5 --workers 24

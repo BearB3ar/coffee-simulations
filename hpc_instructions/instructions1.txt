@@ -1,0 +1,21 @@
+#!/bin/bash
+#PBS -P Coffee_sim
+#PBS -q parallel
+#PBS -l select=1:ncpus=24:mem=200gb
+#PBS -j oe
+#PBS -N V60_Single_Run
+#PBS -l walltime=01:00:00
+
+cd "$PBS_O_WORKDIR"
+
+# Force underlying C/C++ math libraries to use all 24 requested CPUs
+export OMP_NUM_THREADS=24
+export MKL_NUM_THREADS=24
+export OPENBLAS_NUM_THREADS=24
+
+# Initialize Conda
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate pnm
+
+# Run Python inside a Virtual Framebuffer to prevent Animation/Plotting crashes
+xvfb-run -a python run1_hpc.py > verbose_log.txt 2>&1
