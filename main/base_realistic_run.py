@@ -724,8 +724,11 @@ class Simulation:
 
                 # Update remaining solute and ensure extraction does not exceed available
                 driving_force = np.maximum(0, params['c_sat'] - C_new)
-                mass_from_fast = params['k_fast'] * driving_force * pn['pore.volume'] * dt
-                mass_from_slow = params['k_slow'] * driving_force * pn['pore.volume'] * dt
+                # A_mat suppresses extraction at the Dirichlet inlet, so inventory removal must too.
+                driving_force[inlet_pores] = 0.0
+                # Match the fast/slow inventory removal rates to the source term used in A_mat.
+                mass_from_fast = params['k_fast'] * remaining_fast * driving_force * pn['pore.volume'] * dt
+                mass_from_slow = params['k_slow'] * remaining_slow * driving_force * pn['pore.volume'] * dt
                 extracted_fast = np.minimum(mass_from_fast, phase[f'pore.{solute_name}_available_fast'])
                 extracted_slow = np.minimum(mass_from_slow, phase[f'pore.{solute_name}_available_slow'])
                 phase[f'pore.{solute_name}_available_fast'] -= extracted_fast
