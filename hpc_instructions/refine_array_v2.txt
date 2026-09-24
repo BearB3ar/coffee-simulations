@@ -1,0 +1,20 @@
+#!/bin/bash
+#PBS -N 4_Refine_Array
+#PBS -q parallel
+#PBS -l select=1:ncpus=12:mem=160gb
+#PBS -l walltime=6:00:00
+#PBS -J 1-20
+
+cd "$PBS_O_WORKDIR"
+
+source ~/miniforge3/etc/profile.d/conda.sh
+
+conda activate pnm
+
+# Precondition: Abort if refine_tasks.csv is missing
+if [ ! -f "refine_tasks.csv" ]; then
+    echo "CRITICAL ERROR: refine_tasks.csv missing! Job 3 likely failed. Aborting subjob." >&2
+    exit 1
+fi
+
+python run_hpc_chunked_sweep.py --mode run_chunk --task_file refine_tasks.csv --output_prefix refine_results --num_chunks 20 --workers 3

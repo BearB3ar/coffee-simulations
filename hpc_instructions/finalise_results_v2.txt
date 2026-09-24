@@ -1,0 +1,26 @@
+#PBS -N 5_Finalize
+#PBS -q serial
+#PBS -l select=1:ncpus=1:mem=4gb
+#PBS -l walltime=00:10:00
+
+cd "$PBS_O_WORKDIR"
+
+source ~/miniforge3/etc/profile.d/conda.sh
+
+conda activate pnm
+
+# Precondition: Ensure refine results actually exist
+REFINE_COUNT=$(ls -1 refine_results_*.csv 2>/dev/null | wc -l)
+if [ "$REFINE_COUNT" -eq 0 ]; then
+    echo "CRITICAL ERROR: No refine_results_*.csv files found! Aborting finalization." >&2
+    exit 1
+fi
+
+echo "Found $REFINE_COUNT refine result files. Finalizing sweep results..."
+python run_hpc_chunked_sweep.py --mode finalize
+
+# Postcondition: Verify final file generated
+if [ ! -f "final_sweep_results.csv" ]; then
+    echo "CRITICAL ERROR: final_sweep_results.csv was not generated!" >&2
+    exit 1
+fi

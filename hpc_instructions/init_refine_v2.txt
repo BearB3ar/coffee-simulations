@@ -1,0 +1,27 @@
+#!/bin/bash
+#PBS -N 3_Init_Refine
+#PBS -q serial
+#PBS -l select=1:ncpus=1:mem=4gb
+#PBS -l walltime=00:10:00
+
+cd "$PBS_O_WORKDIR"
+
+source ~/miniforge3/etc/profile.d/conda.sh
+
+conda activate pnm
+
+# Precondition: Ensure coarse results actually exist
+COARSE_COUNT=$(ls -1 coarse_results_*.csv 2>/dev/null | wc -l)
+if [ "$COARSE_COUNT" -eq 0 ]; then
+    echo "CRITICAL ERROR: No coarse_results_*.csv files found! Aborting." >&2
+    exit 1
+fi
+
+echo "Found $COARSE_COUNT coarse result files. Building refinement tasks..."
+python run_hpc_chunked_sweep.py --mode init_refine
+
+# Postcondition: Verify output was generated
+if [ ! -f "refine_tasks.csv" ]; then
+    echo "CRITICAL ERROR: refine_tasks.csv was not generated! Aborting." >&2
+    exit 1
+fi
